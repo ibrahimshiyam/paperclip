@@ -1182,6 +1182,26 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(await pathExists(path.join(codexHome, "skills", remove.runtimeName))).toBe(false);
   });
 
+  it.skipIf(process.platform === "win32")("keeps the operational skill in an ACPX Codex home after an empty replacement", async () => {
+    const root = await makeTempRoot();
+    const skillRoot = path.join(root, "skills");
+    const codexHome = path.join(root, "codex-home");
+    const operational = {
+      ...await createSkill(skillRoot, "paperclip"),
+      key: "paperclipai/paperclip/paperclip",
+    };
+
+    await runExecutor({
+      agent: "codex",
+      stateDir: path.join(root, "state"),
+      env: { CODEX_HOME: codexHome },
+      paperclipRuntimeSkills: [operational],
+      paperclipSkillSync: { desiredSkills: [] },
+    });
+
+    expect(await pathExists(path.join(codexHome, "skills", operational.runtimeName, "SKILL.md"))).toBe(true);
+  });
+
   it.skipIf(process.platform === "win32")("removes legacy ACPX Codex skill symlinks when a skill is no longer desired", async () => {
     const root = await makeTempRoot();
     const skillRoot = path.join(root, "skills");

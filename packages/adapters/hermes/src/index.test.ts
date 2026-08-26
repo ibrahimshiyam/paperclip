@@ -1,3 +1,6 @@
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { expect, test } from "vitest";
 
 import {
@@ -60,4 +63,33 @@ test("Hermes adapter exposes bundled Paperclip task bridge skill", async () => {
   });
 
   expect(snapshot?.entries.some((entry) => entry.runtimeName === "paperclip-task-bridge")).toBe(true);
+});
+
+test("Hermes keeps the operational Paperclip skill linked after an empty replacement", async () => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-hermes-core-skill-"));
+  try {
+    const source = path.join(home, "runtime-skills", "paperclip");
+    await fs.mkdir(source, { recursive: true });
+    await fs.writeFile(path.join(source, "SKILL.md"), "# Paperclip\n", "utf8");
+    const adapter = createServerAdapter();
+    const snapshot = await adapter.syncSkills?.({
+      adapterType: "hermes_local",
+      agentId: "11111111-1111-4111-8111-111111111111",
+      companyId: "22222222-2222-4222-8222-222222222222",
+      config: {
+        env: { HOME: home },
+        paperclipRuntimeSkills: [{
+          key: "paperclipai/paperclip/paperclip",
+          runtimeName: "paperclip",
+          source,
+        }],
+        paperclipSkillSync: { desiredSkills: [] },
+      },
+    }, []);
+
+    expect(snapshot?.desiredSkills).toContain("paperclipai/paperclip/paperclip");
+    expect((await fs.lstat(path.join(home, ".hermes", "skills", "paperclip"))).isSymbolicLink()).toBe(true);
+  } finally {
+    await fs.rm(home, { recursive: true, force: true });
+  }
 });
