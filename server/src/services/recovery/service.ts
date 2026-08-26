@@ -99,6 +99,7 @@ export const ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS = 4 * 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS = 30 * 60 * 1000;
 export const DEFAULT_LIVENESS_REESCALATION_COOLDOWN_MS = 60 * 60 * 1000;
 const ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES = 8 * 1024;
+const ACTIVE_RUN_OUTPUT_INACTIVITY_ERROR_CODE = "codex_output_inactivity_monitor";
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
@@ -1601,7 +1602,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     });
   }
 
-  async function cleanupSourceResolvedRunProcess(input: {
+  async function cleanupLocalRunProcess(input: {
     run: typeof heartbeatRuns.$inferSelect;
     runningAgent: typeof agents.$inferSelect;
   }) {
@@ -1673,17 +1674,41 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     }
   }
 
-  async function finalizeAgentAfterSourceResolvedRun(run: typeof heartbeatRuns.$inferSelect, status: "succeeded" | "cancelled") {
+  async function cleanupSourceResolvedRunProcess(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    runningAgent: typeof agents.$inferSelect;
+  }) {
+    return cleanupLocalRunProcess(input);
+  }
+
+  function truncateAgentErrorReason(reason: string | null | undefined): string | null {
+    if (!reason) return null;
+    const trimmed = reason.trim();
+    if (!trimmed) return null;
+    return trimmed.length > 500 ? `${trimmed.slice(0, 497)}...` : trimmed;
+  }
+
+  async function finalizeAgentAfterRecoveredRun(
+    run: typeof heartbeatRuns.$inferSelect,
+    status: "succeeded" | "cancelled" | "timed_out",
+    failureReason?: string | null,
+    options?: { keepIdleOnFailure?: boolean },
+  ) {
     const [runningCountRow] = await db
       .select({ count: sql<number>`count(*)::int` })
       .from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.agentId, run.agentId), eq(heartbeatRuns.status, "running")));
     const runningCount = Number(runningCountRow?.count ?? 0);
-    const nextStatus = runningCount > 0 ? "running" : status === "succeeded" || status === "cancelled" ? "idle" : "error";
+    const nextStatus = runningCount > 0
+      ? "running"
+      : status === "succeeded" || status === "cancelled" || options?.keepIdleOnFailure
+        ? "idle"
+        : "error";
     await db
       .update(agents)
       .set({
         status: nextStatus,
+        errorReason: nextStatus === "error" ? truncateAgentErrorReason(failureReason) : null,
         lastHeartbeatAt: new Date(),
         updatedAt: new Date(),
       })
@@ -1829,8 +1854,117 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         cleanup,
       },
     });
-    await finalizeAgentAfterSourceResolvedRun(finalizedRun, finalRunStatus);
+    await finalizeAgentAfterRecoveredRun(finalizedRun, finalRunStatus);
     return { kind: "folded" as const, evaluationIssueId: input.existingEvaluation?.id ?? null };
+  }
+
+  async function terminalizeCriticalSilentActiveRun(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    runningAgent: typeof agents.$inferSelect;
+    sourceIssue: typeof issues.$inferSelect | null;
+    evaluationIssueId: string | null;
+    silenceStartedAt: Date | null;
+    silenceAgeMs: number | null;
+    now: Date;
+  }) {
+    if ((input.silenceAgeMs ?? 0) < ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS) {
+      return { terminalized: false as const };
+    }
+
+    const message = "Run timed out by active-run output watchdog after critical output silence";
+    const initialResultJson = {
+      ...parseObject(input.run.resultJson),
+      activeRunOutputWatchdog: {
+        reason: ACTIVE_RUN_OUTPUT_INACTIVITY_ERROR_CODE,
+        source: "recovery.scan_silent_active_runs",
+        sourceIssueId: input.sourceIssue?.id ?? null,
+        sourceIssueIdentifier: input.sourceIssue?.identifier ?? null,
+        evaluationIssueId: input.evaluationIssueId,
+        silenceStartedAt: input.silenceStartedAt?.toISOString() ?? null,
+        silenceAgeMs: input.silenceAgeMs,
+        criticalThresholdMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS,
+      },
+    };
+
+    const criticalBefore = new Date(input.now.getTime() - ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS);
+    const finalizedRun = await db.transaction(async (tx) => {
+      const [updatedRun] = await tx
+        .update(heartbeatRuns)
+        .set({
+          status: "timed_out",
+          finishedAt: input.now,
+          error: message,
+          errorCode: ACTIVE_RUN_OUTPUT_INACTIVITY_ERROR_CODE,
+          resultJson: initialResultJson,
+          livenessState: "failed",
+          livenessReason: message,
+          updatedAt: input.now,
+        })
+        .where(
+          and(
+            eq(heartbeatRuns.id, input.run.id),
+            eq(heartbeatRuns.companyId, input.run.companyId),
+            eq(heartbeatRuns.status, "running"),
+            sql`coalesce(${heartbeatRuns.lastOutputAt}, ${heartbeatRuns.processStartedAt}, ${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) <= ${criticalBefore.toISOString()}::timestamptz`,
+          ),
+        )
+        .returning();
+      if (!updatedRun) return null;
+
+      if (input.run.wakeupRequestId) {
+        await tx
+          .update(agentWakeupRequests)
+          .set({
+            status: "failed",
+            finishedAt: input.now,
+            error: message,
+            updatedAt: input.now,
+          })
+          .where(and(eq(agentWakeupRequests.id, input.run.wakeupRequestId), eq(agentWakeupRequests.companyId, input.run.companyId)));
+      }
+
+      return updatedRun;
+    });
+    if (!finalizedRun) return { terminalized: false as const };
+
+    const cleanup = await cleanupLocalRunProcess({ run: finalizedRun, runningAgent: input.runningAgent });
+    const resultJson = {
+      ...parseObject(finalizedRun.resultJson),
+      activeRunOutputWatchdog: {
+        ...parseObject(parseObject(finalizedRun.resultJson).activeRunOutputWatchdog),
+        cleanup,
+      },
+    };
+    await db
+      .update(heartbeatRuns)
+      .set({ resultJson, updatedAt: input.now })
+      .where(eq(heartbeatRuns.id, finalizedRun.id));
+
+    await appendRecoveryRunEvent(finalizedRun, {
+      level: cleanup.outcome === "failed" ? "error" : "warn",
+      message,
+      payload: resultJson.activeRunOutputWatchdog,
+    });
+    await logActivity(db, {
+      companyId: input.run.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: input.run.agentId,
+      runId: input.run.id,
+      action: "heartbeat.output_stale_terminalized",
+      entityType: "heartbeat_run",
+      entityId: input.run.id,
+      details: {
+        source: "recovery.scan_silent_active_runs",
+        sourceIssueId: input.sourceIssue?.id ?? null,
+        sourceIssueIdentifier: input.sourceIssue?.identifier ?? null,
+        evaluationIssueId: input.evaluationIssueId,
+        silenceAgeMs: input.silenceAgeMs,
+        cleanup,
+      },
+    });
+    await finalizeAgentAfterRecoveredRun(finalizedRun, "timed_out", message, { keepIdleOnFailure: true });
+    return { terminalized: true as const, run: finalizedRun };
   }
 
   async function resolveStaleRunOwnerAgentId(input: {
@@ -2076,7 +2210,18 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     if (!runningAgent || runningAgent.companyId !== input.run.companyId) return { kind: "skipped" as const };
     const sourceIssue = await resolveStaleRunSourceIssue(input.run);
     const existing = await findOpenStaleRunEvaluation(input.run.companyId, input.run.id);
+    const silenceStartedAt = silenceStartedAtForRun(input.run);
+    const silenceAgeMs = silenceAgeMsForRun(input.run, input.now);
     if (sourceIssue && isRecoveryOriginIssue(sourceIssue)) {
+      const terminalized = await terminalizeCriticalSilentActiveRun({
+        run: input.run,
+        runningAgent,
+        sourceIssue,
+        evaluationIssueId: existing?.id ?? null,
+        silenceStartedAt,
+        silenceAgeMs,
+        now: input.now,
+      });
       await logActivity(db, {
         companyId: input.run.companyId,
         actorType: "system",
@@ -2092,11 +2237,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           sourceIssueIdentifier: sourceIssue.identifier,
           sourceIssueOriginKind: sourceIssue.originKind,
           existingEvaluationIssueId: existing?.id ?? null,
+          terminalized: terminalized.terminalized,
         },
       });
-      return { kind: "skipped" as const };
+      return terminalized.terminalized
+        ? { kind: "skipped" as const, terminalized: true as const }
+        : { kind: "skipped" as const };
     }
-    const silenceStartedAt = silenceStartedAtForRun(input.run);
     if (sourceIssue && isTerminalIssueStatus(sourceIssue.status)) {
       const terminalEvidence = await latestSameRunSourceTerminalEvidence({
         run: input.run,
@@ -2111,7 +2258,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           evidence: terminalEvidence,
           existingEvaluation: existing,
           silenceStartedAt,
-          silenceAgeMs: silenceAgeMsForRun(input.run, input.now),
+          silenceAgeMs,
           now: input.now,
         });
       }
@@ -2201,7 +2348,18 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           evaluationIssue: existing,
           run: input.run,
         });
-        return { kind: "escalated" as const, evaluationIssueId: existing.id };
+        const terminalized = await terminalizeCriticalSilentActiveRun({
+          run: input.run,
+          runningAgent,
+          sourceIssue,
+          evaluationIssueId: existing.id,
+          silenceStartedAt,
+          silenceAgeMs: evidence.silenceAgeMs,
+          now: input.now,
+        });
+        return terminalized.terminalized
+          ? { kind: "escalated" as const, evaluationIssueId: existing.id, terminalized: true as const }
+          : { kind: "escalated" as const, evaluationIssueId: existing.id };
       }
       if (level === "critical") {
         await ensureSourceIssueCommentedForStaleEvaluation({
@@ -2209,6 +2367,18 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           evaluationIssue: existing,
           run: input.run,
         });
+        const terminalized = await terminalizeCriticalSilentActiveRun({
+          run: input.run,
+          runningAgent,
+          sourceIssue,
+          evaluationIssueId: existing.id,
+          silenceStartedAt,
+          silenceAgeMs: evidence.silenceAgeMs,
+          now: input.now,
+        });
+        if (terminalized.terminalized) {
+          return { kind: "existing" as const, evaluationIssueId: existing.id, terminalized: true as const };
+        }
       }
       return { kind: "existing" as const, evaluationIssueId: existing.id };
     }
@@ -2294,6 +2464,20 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         }, "status_only"),
       });
     }
+    if (level === "critical") {
+      const terminalized = await terminalizeCriticalSilentActiveRun({
+        run: input.run,
+        runningAgent,
+        sourceIssue,
+        evaluationIssueId: evaluation.id,
+        silenceStartedAt,
+        silenceAgeMs: evidence.silenceAgeMs,
+        now: input.now,
+      });
+      if (terminalized.terminalized) {
+        return { kind: "created" as const, evaluationIssueId: evaluation.id, terminalized: true as const };
+      }
+    }
     return { kind: "created" as const, evaluationIssueId: evaluation.id };
   }
 
@@ -2340,6 +2524,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       existing: 0,
       escalated: 0,
       folded: 0,
+      terminalized: 0,
       snoozed: 0,
       skipped: 0,
       evaluationIssueIds: [] as string[],
@@ -2356,6 +2541,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       else if (outcome.kind === "escalated") result.escalated += 1;
       else if (outcome.kind === "folded") result.folded += 1;
       else result.skipped += 1;
+      if ("terminalized" in outcome && outcome.terminalized) result.terminalized += 1;
       if ("evaluationIssueId" in outcome && outcome.evaluationIssueId) {
         result.evaluationIssueIds.push(outcome.evaluationIssueId);
       }

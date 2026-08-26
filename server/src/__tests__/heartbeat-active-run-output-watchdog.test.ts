@@ -345,6 +345,64 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     expect(source?.status).not.toBe("blocked");
   });
 
+  it("terminalizes critically silent active runs so the source issue can recover", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, coderId, issueId, runId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 60_000,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const scan = await heartbeat.scanSilentActiveRuns({ now, companyId });
+
+    expect(scan).toMatchObject({ created: 1, terminalized: 1 });
+    const [timedOutRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(timedOutRun).toMatchObject({
+      status: "timed_out",
+      errorCode: "codex_output_inactivity_monitor",
+      livenessState: "failed",
+    });
+    expect(timedOutRun?.finishedAt?.toISOString()).toBe(now.toISOString());
+    expect(timedOutRun?.resultJson).toMatchObject({
+      activeRunOutputWatchdog: {
+        reason: "codex_output_inactivity_monitor",
+        sourceIssueId: issueId,
+        evaluationIssueId: scan.evaluationIssueIds[0],
+      },
+    });
+
+    const [agent] = await db.select().from(agents).where(eq(agents.id, coderId));
+    expect(agent?.status).toBe("idle");
+    expect(agent?.errorReason).toBeNull();
+
+    const terminalEvents = await db
+      .select()
+      .from(heartbeatRunEvents)
+      .where(and(eq(heartbeatRunEvents.runId, runId), eq(heartbeatRunEvents.message, "Run timed out by active-run output watchdog after critical output silence")));
+    expect(terminalEvents).toHaveLength(1);
+
+    const sourceIssue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]);
+    expect(sourceIssue?.status).toBe("in_progress");
+    expect(sourceIssue?.executionRunId).toBe(runId);
+
+    const recovery = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(recovery.continuationRequeued).toBe(1);
+    const [retryRun] = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.retryOfRunId, runId)));
+    expect(retryRun).toMatchObject({
+      status: "queued",
+      agentId: coderId,
+      retryOfRunId: runId,
+    });
+    expect(retryRun?.contextSnapshot).toMatchObject({
+      issueId,
+      retryReason: "issue_continuation_needed",
+    });
+  });
+
   it("emits the source-issue escalation comment only once across repeated critical scans", async () => {
     // Regression: when the same evaluation issue stays open and the watchdog re-evaluates the
     // run as critical on every scan cycle, ensureSourceIssueCommentedForStaleEvaluation must NOT
@@ -641,9 +699,9 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     expect(decisions).toHaveLength(1);
   });
 
-  it("refuses recovery-on-recovery stale-run recursion", async () => {
+  it("refuses recovery-on-recovery stale-run recursion while still terminalizing the silent run", async () => {
     const now = new Date("2026-04-22T20:00:00.000Z");
-    const { companyId } = await seedRunningRun({
+    const { companyId, runId } = await seedRunningRun({
       now,
       ageMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 60_000,
       sourceOriginKind: "stale_active_run_evaluation",
@@ -652,12 +710,17 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
 
     const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
 
-    expect(result).toMatchObject({ created: 0, skipped: 1 });
+    expect(result).toMatchObject({ created: 0, skipped: 1, terminalized: 1 });
     const evaluations = await db
       .select()
       .from(issues)
       .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
     expect(evaluations).toHaveLength(1);
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(run).toMatchObject({
+      status: "timed_out",
+      errorCode: "codex_output_inactivity_monitor",
+    });
   });
 
   it("skips snoozed runs and healthy noisy runs", async () => {

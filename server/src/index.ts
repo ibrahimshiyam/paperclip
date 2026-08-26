@@ -1350,8 +1350,22 @@ export async function startServer(): Promise<StartedServer> {
         }
 
         const scanned = await heartbeat.scanSilentActiveRuns();
-        if (scanned.created > 0 || scanned.escalated > 0) {
+        if (scanned.created > 0 || scanned.escalated > 0 || scanned.terminalized > 0) {
           logger.warn({ ...scanned }, "startup active-run output watchdog created review work");
+        }
+        if (scanned.terminalized > 0) {
+          const reconciledAfterSilentTerminalization = await heartbeat.reconcileStrandedAssignedIssues();
+          if (
+            reconciledAfterSilentTerminalization.assignmentDispatched > 0 ||
+            reconciledAfterSilentTerminalization.dispatchRequeued > 0 ||
+            reconciledAfterSilentTerminalization.continuationRequeued > 0 ||
+            reconciledAfterSilentTerminalization.escalated > 0
+          ) {
+            logger.warn(
+              { ...reconciledAfterSilentTerminalization },
+              "startup recovery reconciled issues after terminalizing silent active runs",
+            );
+          }
         }
 
         const swept = await heartbeat.sweepStaleIssueLocks();
@@ -1576,8 +1590,22 @@ export async function startServer(): Promise<StartedServer> {
             })
             .then(async () => {
               const scanned = await heartbeat.scanSilentActiveRuns();
-              if (scanned.created > 0 || scanned.escalated > 0) {
+              if (scanned.created > 0 || scanned.escalated > 0 || scanned.terminalized > 0) {
                 logger.warn({ ...scanned }, "periodic active-run output watchdog created review work");
+              }
+              if (scanned.terminalized > 0) {
+                const reconciledAfterSilentTerminalization = await heartbeat.reconcileStrandedAssignedIssues();
+                if (
+                  reconciledAfterSilentTerminalization.assignmentDispatched > 0 ||
+                  reconciledAfterSilentTerminalization.dispatchRequeued > 0 ||
+                  reconciledAfterSilentTerminalization.continuationRequeued > 0 ||
+                  reconciledAfterSilentTerminalization.escalated > 0
+                ) {
+                  logger.warn(
+                    { ...reconciledAfterSilentTerminalization },
+                    "periodic recovery reconciled issues after terminalizing silent active runs",
+                  );
+                }
               }
             })
             .then(async () => {
