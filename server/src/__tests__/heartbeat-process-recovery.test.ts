@@ -1316,7 +1316,21 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(["queued", "running"]).toContain(retryRun?.status);
     expect(retryRun?.retryOfRunId).toBe(runId);
     expect(retryRun?.processLossRetryCount).toBe(1);
+    expect(retryRun?.contextSnapshot).toMatchObject({
+      taskKey: issueId,
+      issueId,
+    });
     expect(retryRun?.contextSnapshot as Record<string, unknown>).not.toHaveProperty("modelProfile");
+
+    const retryWakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.runId, retryRun!.id))
+      .then((rows) => rows[0] ?? null);
+    expect(retryWakeup?.payload).toMatchObject({
+      taskKey: issueId,
+      issueId,
+    });
 
     const issue = await waitForValue(async () =>
       db

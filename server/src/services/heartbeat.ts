@@ -10146,6 +10146,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
     const retryContextSnapshot = withRecoveryModelProfileHint({
       ...contextSnapshot,
+      ...(taskKey ? { taskKey } : {}),
       retryOfRunId: run.id,
       wakeReason: "missing_issue_comment",
       retryReason: "missing_issue_comment",
@@ -10176,6 +10177,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           reason: "missing_issue_comment",
           payload: withRecoveryModelProfileHint({
             issueId,
+            ...(taskKey ? { taskKey } : {}),
             retryOfRunId: run.id,
             retryReason: "missing_issue_comment",
           }, "status_only"),
@@ -10426,6 +10428,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
     const retryContextSnapshot = withRecoveryModelProfileHint({
       ...contextSnapshot,
+      ...(taskKey ? { taskKey } : {}),
       retryOfRunId: run.id,
       wakeReason: "process_lost_retry",
       retryReason,
@@ -10443,6 +10446,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           reason: "process_lost_retry",
           payload: withRecoveryModelProfileHint({
             ...(issueId ? { issueId } : {}),
+            ...(taskKey ? { taskKey } : {}),
             retryOfRunId: run.id,
           }, "normal_model"),
           status: "queued",
@@ -11601,6 +11605,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       Object.keys(workspaceValidationRetryPayload).length > 0;
     const retryContextSnapshot: Record<string, unknown> = withRecoveryModelProfileHint({
       ...contextSnapshot,
+      ...(taskKey ? { taskKey } : {}),
       retryOfRunId: run.id,
       wakeReason,
       retryReason,
@@ -11844,6 +11849,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           reason: wakeReason,
           payload: withRecoveryModelProfileHint({
             ...(issueId ? { issueId } : {}),
+            ...(taskKey ? { taskKey } : {}),
             retryOfRunId: run.id,
             ...interactionContinuationPayload,
             retryReason,
