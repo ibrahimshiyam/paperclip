@@ -202,7 +202,7 @@ export async function readGitWorkspaceSnapshot(localDir: string): Promise<GitWor
   }
 }
 
-/** The `git status --ignored` output for one directory, read by {@link readReferencedSourceGitIgnoredPaths}. */
+/** The `git ls-files --others --ignored` output for one directory, read by {@link readReferencedSourceGitIgnoredPaths}. */
 export interface ReferencedSourceGitIgnoreScan {
   /** The absolute repository top level `git rev-parse --show-toplevel` reports. */
   toplevel: string;
@@ -290,15 +290,18 @@ export const REFERENCED_SOURCE_IGNORE_MAX_ENTRY_COUNT = 10_000;
 export const REFERENCED_SOURCE_IGNORE_MAX_TOTAL_BYTES = 2 * 1024 * 1024;
 
 /**
- * Bound on the raw `git status --ignored` output `readReferencedSourceGitIgnoredPaths`
- * lets Node buffer, kept proportionate to
- * {@link REFERENCED_SOURCE_IGNORE_MAX_TOTAL_BYTES} instead of the far larger
- * allowance the anchor workspace's general-purpose full-tree reads use. The
- * parser below still enforces the real entry-count and byte bounds while it
- * reads each record, so this value only needs headroom for the "!! " prefix
- * and NUL delimiter on every entry, plus the other (non-ignored) status
- * lines the same command reports — not room for an oversized ignored-path
- * list to land in memory in the first place.
+ * Bound on the raw `git ls-files --others --ignored` output
+ * `readReferencedSourceGitIgnoredPaths` lets Node buffer, kept proportionate
+ * to {@link REFERENCED_SOURCE_IGNORE_MAX_TOTAL_BYTES} instead of the far
+ * larger allowance the anchor workspace's general-purpose full-tree reads
+ * use. The command reports only ignored entries (see the invocation below),
+ * so this raw allowance is not exposed to an unrelated tracked-change or
+ * ordinary-untracked record count — a repository with a huge diff or a huge
+ * untracked set never grows this command's output. The parser below still
+ * enforces the real entry-count and byte bounds while it reads each record,
+ * so this value only needs headroom for the NUL delimiter and the trailing
+ * slash on every entry, not room for an oversized ignored-path list to land
+ * in memory in the first place.
  */
 const REFERENCED_SOURCE_IGNORE_MAX_RAW_BUFFER = REFERENCED_SOURCE_IGNORE_MAX_TOTAL_BYTES * 2;
 
@@ -353,9 +356,21 @@ export async function readReferencedSourceGitIgnoredPaths(
     throw new Error(`git rev-parse --show-toplevel returned an empty path for ${localDir}`);
   }
 
+  // `ls-files --others --ignored --exclude-standard` reports only ignored
+  // entries — unlike `git status --ignored`, it never also reports a tracked
+  // change or an ordinary untracked file. A repository with a huge diff or a
+  // huge untracked set (unrelated to what is ignored) cannot inflate this
+  // command's raw output, so the raw buffer bound below only ever has to
+  // cover the declared ignored-set limits, not an unbounded amount of
+  // unrelated status noise ahead of them.
+  // `--directory` collapses an entirely ignored directory into one entry with
+  // a trailing slash, matching `git status --ignored`'s traditional mode.
+  // `--full-name` reports paths relative to the repository toplevel, so this
+  // still matches the toplevel-relative shape `resolveReferencedSourceIgnore`
+  // re-relativizes against, regardless of `localDir`'s position under it.
   const ignoredResult = await runHardenedReadOnlyGit(
     localDir,
-    ["status", "--ignored", "--porcelain=v1", "-z", "--untracked-files=normal"],
+    ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "--full-name", "-z"],
     "referenced_source.ignored_files",
     { timeout: 60_000, maxBuffer: REFERENCED_SOURCE_IGNORE_MAX_RAW_BUFFER },
   );
@@ -368,11 +383,11 @@ export async function readReferencedSourceGitIgnoredPaths(
   // bound, without this scan first retaining and transforming the full
   // oversized response.
   //
-  // Do not trim each entry: `git status -z` already delimits entries with a
-  // NUL byte, so a leading or trailing space in an entry is part of the path
-  // itself, not padding to remove. A length check finds the one genuinely
-  // empty record `-z` appends after the last NUL, without eating a real
-  // path's own leading or trailing whitespace.
+  // Do not trim each entry: `-z` already delimits entries with a NUL byte, so
+  // a leading or trailing space in an entry is part of the path itself, not
+  // padding to remove. A length check finds the one genuinely empty record
+  // `-z` appends after the last NUL, without eating a real path's own
+  // leading or trailing whitespace.
   const rawIgnored = ignoredResult.stdout;
   const parsedIgnoredEntries: string[] = [];
   let totalIgnoredBytes = 0;
@@ -383,13 +398,7 @@ export async function readReferencedSourceGitIgnoredPaths(
     const record = rawIgnored.slice(recordStart, recordEnd);
     recordStart = nulIndex === -1 ? rawIgnored.length : nulIndex + 1;
 
-    // A record for a status other than "ignored" (a tracked change, an
-    // ordinary untracked file) does not carry the `!! ` prefix and is not
-    // part of the ignored-path list this scan returns.
-    if (record.length === 0 || !record.startsWith("!! ")) {
-      continue;
-    }
-    const entry = record.slice(3).replace(/\/+$/, "");
+    const entry = record.replace(/\/+$/, "");
     if (entry.length === 0) {
       continue;
     }

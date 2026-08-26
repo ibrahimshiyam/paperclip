@@ -621,12 +621,12 @@ describe("git workspace sync", () => {
       const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-referenced-bound-count-"));
       cleanupDirs.push(rootDir);
       const repo = await createRepo(rootDir);
-      // Synthesize the `git status --ignored -z` output directly, rather than
-      // creating ten thousand real files, by intercepting the scan at the
-      // executor seam. The parser must reject this before it sorts or
-      // re-relativizes the list.
+      // Synthesize the `git ls-files --others --ignored -z` output directly,
+      // rather than creating ten thousand real files, by intercepting the
+      // scan at the executor seam. The parser must reject this before it
+      // sorts or re-relativizes the list.
       const overLimitCount = REFERENCED_SOURCE_IGNORE_MAX_ENTRY_COUNT + 1;
-      const syntheticIgnored = `${Array.from({ length: overLimitCount }, (_, index) => `!! entry-${index}`).join("\0")}\0`;
+      const syntheticIgnored = `${Array.from({ length: overLimitCount }, (_, index) => `entry-${index}`).join("\0")}\0`;
       setExpensiveWorkspaceGitExecutor(async (input) => {
         if (input.operation === "referenced_source.ignored_files") {
           return { stdout: syntheticIgnored, stderr: "" };
@@ -649,7 +649,7 @@ describe("git workspace sync", () => {
       const repo = await createRepo(rootDir);
       // One entry alone exceeds the byte bound, well under the entry-count bound.
       const hugeEntry = "a".repeat(REFERENCED_SOURCE_IGNORE_MAX_TOTAL_BYTES + 1);
-      const syntheticIgnored = `!! ${hugeEntry}\0`;
+      const syntheticIgnored = `${hugeEntry}\0`;
       setExpensiveWorkspaceGitExecutor(async (input) => {
         if (input.operation === "referenced_source.ignored_files") {
           return { stdout: syntheticIgnored, stderr: "" };
@@ -679,10 +679,10 @@ describe("git workspace sync", () => {
       // the byte bound instead, the moment the third entry crosses it, well
       // before the count bound is ever reached.
       const oversizedEntry = "a".repeat(Math.ceil(REFERENCED_SOURCE_IGNORE_MAX_TOTAL_BYTES / 2) + 1);
-      const bigEntries = Array.from({ length: 3 }, (_, index) => `!! ${oversizedEntry}-${index}`);
+      const bigEntries = Array.from({ length: 3 }, (_, index) => `${oversizedEntry}-${index}`);
       const trailingEntries = Array.from(
         { length: REFERENCED_SOURCE_IGNORE_MAX_ENTRY_COUNT + 10 },
-        (_, index) => `!! trailing-${index}`,
+        (_, index) => `trailing-${index}`,
       );
       const syntheticIgnored = `${[...bigEntries, ...trailingEntries].join("\0")}\0`;
       setExpensiveWorkspaceGitExecutor(async (input) => {
@@ -722,6 +722,50 @@ describe("git workspace sync", () => {
       // anchor workspace's general-purpose full-tree reads use.
       expect(observedMaxBuffer).toBeGreaterThan(REFERENCED_SOURCE_IGNORE_MAX_TOTAL_BYTES);
       expect(observedMaxBuffer).toBeLessThan(16 * 1024 * 1024);
+    });
+
+    it("does not fail closed on a huge amount of unrelated tracked-change and untracked noise, when the ignored set itself stays in bounds", async () => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-referenced-mixed-status-"));
+      cleanupDirs.push(rootDir);
+      const repo = await createRepo(rootDir);
+      await writeFile(path.join(repo, ".gitignore"), "secret.env\n", "utf8");
+      await writeFile(path.join(repo, "secret.env"), "TOKEN=abc\n", "utf8");
+
+      // Many long-named, untracked, NOT-ignored files at the repository root.
+      // `git status` reports one record per file (root-level files are never
+      // collapsed the way an entirely untracked directory is), so this alone
+      // makes the raw `git status --ignored` response exceed the raw buffer
+      // bound this scan used to apply to the WHOLE response, well before the
+      // parser ever got to discard these non-ignored records. The ignored set
+      // above stays a single small entry throughout.
+      const noiseNameLength = 220;
+      const noiseFileCount = 30_000;
+      const noiseNames = Array.from(
+        { length: noiseFileCount },
+        (_, index) => `${"n".repeat(noiseNameLength - 6)}${String(index).padStart(6, "0")}`,
+      );
+      const writeConcurrency = 200;
+      for (let start = 0; start < noiseNames.length; start += writeConcurrency) {
+        const batch = noiseNames.slice(start, start + writeConcurrency);
+        await Promise.all(batch.map((name) => writeFile(path.join(repo, name), "", "utf8")));
+      }
+
+      // Confirm this test actually reproduces the reported defect precondition:
+      // the raw `git status --ignored` response for this repository state is
+      // larger than the 4 MiB raw buffer bound the scan used to apply to the
+      // whole response, not just to the declared ignored-set limits. A large
+      // explicit maxBuffer is required here only to observe that raw size;
+      // the scan under test never issues this command.
+      const rawStatusResult = await runLocalGit(
+        repo,
+        ["status", "--ignored", "--porcelain=v1", "-z", "--untracked-files=normal"],
+        { maxBuffer: 16 * 1024 * 1024 },
+      );
+      expect(Buffer.byteLength(rawStatusResult.stdout, "utf8")).toBeGreaterThan(REFERENCED_SOURCE_IGNORE_MAX_TOTAL_BYTES * 2);
+
+      const scan = await readReferencedSourceGitIgnoredPaths(repo);
+
+      expect(scan?.ignoredPaths).toEqual(["secret.env"]);
     });
 
     it("routes both scan commands through the registered scheduler instead of spawning git directly", async () => {

@@ -265,7 +265,7 @@ function relativizeUnderGitToplevel(input: { toplevel: string; localPath: string
 }
 
 /**
- * Re-relativize root-relative ignored paths (as `git status --ignored`
+ * Re-relativize root-relative ignored paths (as `readReferencedSourceGitIgnoredPaths`
  * reports them, from the repository toplevel) to `offset`, the position of
  * the referenced project's `localPath` under that toplevel. Keeps only the
  * entries that are `offset` itself or a descendant of it — an ignored path
