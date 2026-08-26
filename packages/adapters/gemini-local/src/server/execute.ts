@@ -66,6 +66,7 @@ import {
   formatGeminiAcpFallbackMessage,
   resolveGeminiExecutionEngineForRun,
 } from "./acp.js";
+import { resolveGeminiSkillsHome } from "./skills.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const executeGeminiAcp = createGeminiAcpExecutor();
@@ -132,25 +133,21 @@ function renderApiAccessNote(env: Record<string, string>): string {
   ].join("\n");
 }
 
-function geminiSkillsHome(): string {
-  return path.join(os.homedir(), ".gemini", "skills");
-}
-
 /**
- * Inject Paperclip skills directly into `~/.gemini/skills/` via symlinks.
+ * Inject Paperclip skills directly into the effective Gemini skills home.
  * This avoids needing GEMINI_CLI_HOME overrides, so the CLI naturally finds
- * both its auth credentials and the injected skills in the real home directory.
+ * both its auth credentials and the injected skills under the child HOME.
  */
 async function ensureGeminiSkillsInjected(
   onLog: AdapterExecutionContext["onLog"],
   skillsEntries: Array<{ key: string; runtimeName: string; source: string }>,
   desiredSkillNames?: string[],
+  skillsHome = resolveGeminiSkillsHome({}),
 ): Promise<void> {
   const desiredSet = new Set(desiredSkillNames ?? skillsEntries.map((entry) => entry.key));
   const selectedEntries = skillsEntries.filter((entry) => desiredSet.has(entry.key));
   if (selectedEntries.length === 0) return;
 
-  const skillsHome = geminiSkillsHome();
   try {
     await fs.mkdir(skillsHome, { recursive: true });
   } catch (err) {
@@ -264,6 +261,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       onLog,
       geminiSkillEntries.filter((entry) => !isPaperclipSkillSourceMissing(entry)),
       desiredGeminiSkillNames,
+      resolveGeminiSkillsHome(config),
     );
   }
 

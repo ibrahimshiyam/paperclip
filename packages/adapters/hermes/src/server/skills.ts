@@ -231,7 +231,17 @@ export async function reconcileHermesPaperclipSkills(
 
   for (const entry of availableEntries) {
     if (!desiredSet.has(entry.key) || isPaperclipSkillSourceMissing(entry)) continue;
-    await ensurePaperclipSkillSymlink(entry.source, path.join(skillsHome, entry.runtimeName));
+    const target = path.join(skillsHome, entry.runtimeName);
+    await ensurePaperclipSkillSymlink(entry.source, target);
+    const linkedSource = await fs.readlink(target).catch(() => null);
+    const resolvedSource = linkedSource
+      ? path.resolve(path.dirname(target), linkedSource)
+      : null;
+    if (resolvedSource !== path.resolve(entry.source)) {
+      throw new Error(
+        `Cannot reconcile Hermes skill "${entry.key}" because ${target} is occupied by another installation.`,
+      );
+    }
   }
 
   for (const [name, installedEntry] of installed.entries()) {

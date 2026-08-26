@@ -365,7 +365,8 @@ export async function execute(
       }
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
-      await ctx.onLog("stdout", `[hermes] Warning: could not reconcile Paperclip-managed skills: ${reason}\n`);
+      await ctx.onLog("stderr", `[hermes] Cannot start without the required Paperclip-managed skills: ${reason}\n`);
+      throw err;
     }
   }
 
