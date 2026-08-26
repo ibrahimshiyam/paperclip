@@ -24,20 +24,6 @@ function isRedactedSkillPolicyDenial(details: Record<string, unknown> | null) {
   return details?.code === "skill_policy_denied";
 }
 
-/**
- * Report an error to Sentry without changing the response the error handler
- * already built. `captureException` never throws by its own contract, but
- * this wrapper keeps that guarantee local to this file too, so a future
- * change to the Sentry gate cannot alter a response or an exit code here.
- */
-function captureExceptionSafely(err: Error) {
-  try {
-    captureException(err);
-  } catch {
-    // Error monitoring must never change the response. Swallow and move on.
-  }
-}
-
 function readZodIssues(err: unknown): unknown[] | null {
   if (err instanceof ZodError) return err.issues;
   if (!err || typeof err !== "object" || (err as { name?: unknown }).name !== "ZodError") return null;
@@ -124,7 +110,7 @@ export function errorHandler(
       );
       const tc = getTelemetryClient();
       if (tc) trackErrorHandlerCrash(tc, { errorCode: err.name });
-      captureExceptionSafely(err);
+      captureException(err);
     }
     res.status(err.status).json({
       error: err.message,
@@ -165,7 +151,7 @@ export function errorHandler(
 
   const tc = getTelemetryClient();
   if (tc) trackErrorHandlerCrash(tc, { errorCode: rootError.name });
-  captureExceptionSafely(rootError);
+  captureException(rootError);
 
   res.status(500).json({
     error: "Internal server error",

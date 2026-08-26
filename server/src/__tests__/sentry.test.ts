@@ -218,22 +218,6 @@ describe("errorHandler Sentry capture", () => {
     expect(received).not.toHaveProperty("reqParams");
     expect(received).not.toHaveProperty("reqQuery");
   });
-
-  it("does not change the errorHandler response when a capture call throws", () => {
-    const capture = vi.spyOn(sentryModule, "captureException").mockImplementation(() => {
-      throw new Error("Sentry capture exploded");
-    });
-    const req = makeReq();
-    const res = makeRes();
-    const next = vi.fn() as unknown as NextFunction;
-    const err = new Error("boom");
-
-    expect(() => errorHandler(err, req, res, next)).not.toThrow();
-
-    expect(res.status).toHaveBeenCalledWith(500);
-    expect(res.json).toHaveBeenCalledWith({ error: "Internal server error" });
-    expect(capture).toHaveBeenCalledTimes(1);
-  });
 });
 
 describe("finalizeServerShutdown Sentry teardown", () => {
