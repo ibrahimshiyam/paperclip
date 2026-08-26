@@ -25,7 +25,7 @@ export async function finalizeServerShutdown(input: {
   shutdownAppServices: (() => Promise<void>) | undefined;
   stopEmbeddedPostgres: (() => Promise<void>) | null;
   shutdownInstrumentation: () => Promise<void>;
-  shutdownSentry?: () => Promise<void>;
+  shutdownSentry: () => Promise<void>;
   log: ShutdownLogger;
 }): Promise<void> {
   const { signal } = input;
@@ -54,7 +54,7 @@ export async function finalizeServerShutdown(input: {
 
   // Flush buffered Sentry events before the process goes away; without this
   // await the last events are dropped on exit.
-  await input.shutdownSentry?.();
+  await input.shutdownSentry();
 }
 
 const COORDINATED_SHUTDOWN_SIGNALS = ["SIGINT", "SIGTERM"] as const;
