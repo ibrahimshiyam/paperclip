@@ -10,6 +10,7 @@ import {
   type IssueCommentPresentation,
   type IssueGraphLivenessAutoRecoveryPreview,
   type IssueGraphLivenessAutoRecoveryPreviewItem,
+  type IssueUnblockDescriptor,
 } from "@paperclipai/shared";
 import {
   agents,
@@ -229,7 +230,7 @@ function recoveryCauseTitle(cause: StrandedRecoveryCause) {
 function recoveryUnblockDescriptor(action: Pick<
   typeof issueRecoveryActions.$inferSelect,
   "ownerAgentId" | "ownerUserId" | "nextAction"
->) {
+>): IssueUnblockDescriptor {
   const actionText = action.nextAction?.trim() ||
     "Inspect the recovery evidence, then retry, reassign, repair the execution path, or record an intentional disposition.";
   return {

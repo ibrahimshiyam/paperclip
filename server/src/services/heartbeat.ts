@@ -46,6 +46,7 @@ import {
   documentAnnotationComments,
   documentAnnotationThreads,
   documentRevisions,
+  documents,
   environmentLeases,
   issueDocuments,
   executionWorkspaces,

@@ -152,7 +152,10 @@ export function activityService(db: Db) {
       .select({
         id: heartbeatRuns.id,
         companyId: heartbeatRuns.companyId,
+        agentId: heartbeatRuns.agentId,
         status: heartbeatRuns.status,
+        startedAt: heartbeatRuns.startedAt,
+        finishedAt: heartbeatRuns.finishedAt,
         contextSnapshot: heartbeatRuns.contextSnapshot,
         resultJson: heartbeatRuns.resultJson,
         stdoutExcerpt: heartbeatRuns.stdoutExcerpt,
