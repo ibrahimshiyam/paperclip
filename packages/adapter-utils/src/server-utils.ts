@@ -681,11 +681,52 @@ type PaperclipWakeRecovery = {
   maxAttempts: number | null;
   nextAction: string | null;
   routingFallbackReason: string | null;
+  artifactInventory: PaperclipWakeArtifactInventory | null;
+};
+
+type PaperclipWakeArtifactInventory = {
+  instruction: string | null;
+  documents: Array<{
+    id: string | null;
+    key: string | null;
+    title: string | null;
+    latestRevisionNumber: number | null;
+    updatedAt: string | null;
+  }>;
+  workProducts: Array<{
+    id: string | null;
+    type: string | null;
+    title: string | null;
+    status: string | null;
+    reviewState: string | null;
+    url: string | null;
+    summary: string | null;
+    metadata: Record<string, unknown>;
+    updatedAt: string | null;
+  }>;
+  attachments: Array<{
+    id: string | null;
+    assetId: string | null;
+    filename: string | null;
+    contentType: string | null;
+    byteSize: number | null;
+    createdByAgentId: string | null;
+    contentPath: string | null;
+    downloadPath: string | null;
+    updatedAt: string | null;
+  }>;
+  counts: {
+    documents: number;
+    workProducts: number;
+    attachments: number;
+  };
+  truncated: boolean;
 };
 
 type PaperclipWakePayload = {
   reason: string | null;
   recovery: PaperclipWakeRecovery | null;
+  artifactInventory: PaperclipWakeArtifactInventory | null;
   issue: PaperclipWakeIssue | null;
   checkedOutByHarness: boolean;
   // Experimental: write user-interaction content in ASD-STE100 Simplified
@@ -720,6 +761,96 @@ type PaperclipWakePayload = {
   fallbackFetchNeeded: boolean;
 };
 
+function normalizeRecoveryArtifactText(value: unknown): string | null {
+  const text = asString(value, "").trim();
+  return text.length > 0 ? text : null;
+}
+
+function normalizePaperclipWakeArtifactInventory(value: unknown): PaperclipWakeArtifactInventory | null {
+  const raw = parseObject(value);
+  const documents = Array.isArray(raw.documents)
+    ? raw.documents
+        .map((entry) => {
+          const row = parseObject(entry);
+          const id = normalizeRecoveryArtifactText(row.id);
+          const key = normalizeRecoveryArtifactText(row.key);
+          const title = normalizeRecoveryArtifactText(row.title);
+          if (!id && !key && !title) return null;
+          const latestRevisionNumber = asNumber(row.latestRevisionNumber, 0);
+          return {
+            id,
+            key,
+            title,
+            latestRevisionNumber: latestRevisionNumber > 0 ? latestRevisionNumber : null,
+            updatedAt: normalizeRecoveryArtifactText(row.updatedAt),
+          };
+        })
+        .filter((entry): entry is PaperclipWakeArtifactInventory["documents"][number] => Boolean(entry))
+    : [];
+  const workProducts = Array.isArray(raw.workProducts)
+    ? raw.workProducts
+        .map((entry) => {
+          const row = parseObject(entry);
+          const id = normalizeRecoveryArtifactText(row.id);
+          const title = normalizeRecoveryArtifactText(row.title);
+          const type = normalizeRecoveryArtifactText(row.type);
+          if (!id && !title && !type) return null;
+          return {
+            id,
+            type,
+            title,
+            status: normalizeRecoveryArtifactText(row.status),
+            reviewState: normalizeRecoveryArtifactText(row.reviewState),
+            url: normalizeRecoveryArtifactText(row.url),
+            summary: normalizeRecoveryArtifactText(row.summary),
+            metadata: parseObject(row.metadata),
+            updatedAt: normalizeRecoveryArtifactText(row.updatedAt),
+          };
+        })
+        .filter((entry): entry is PaperclipWakeArtifactInventory["workProducts"][number] => Boolean(entry))
+    : [];
+  const attachments = Array.isArray(raw.attachments)
+    ? raw.attachments
+        .map((entry) => {
+          const row = parseObject(entry);
+          const id = normalizeRecoveryArtifactText(row.id);
+          const filename = normalizeRecoveryArtifactText(row.filename);
+          const contentPath = normalizeRecoveryArtifactText(row.contentPath);
+          if (!id && !filename && !contentPath) return null;
+          const byteSize = asNumber(row.byteSize, 0);
+          return {
+            id,
+            assetId: normalizeRecoveryArtifactText(row.assetId),
+            filename,
+            contentType: normalizeRecoveryArtifactText(row.contentType),
+            byteSize: byteSize > 0 ? byteSize : null,
+            createdByAgentId: normalizeRecoveryArtifactText(row.createdByAgentId),
+            contentPath,
+            downloadPath: normalizeRecoveryArtifactText(row.downloadPath),
+            updatedAt: normalizeRecoveryArtifactText(row.updatedAt),
+          };
+        })
+        .filter((entry): entry is PaperclipWakeArtifactInventory["attachments"][number] => Boolean(entry))
+    : [];
+  const rawCounts = parseObject(raw.counts);
+  const counts = {
+    documents: Math.max(documents.length, asNumber(rawCounts.documents, 0)),
+    workProducts: Math.max(workProducts.length, asNumber(rawCounts.workProducts, 0)),
+    attachments: Math.max(attachments.length, asNumber(rawCounts.attachments, 0)),
+  };
+  if (documents.length === 0 && workProducts.length === 0 && attachments.length === 0 && Object.values(counts).every((count) => count === 0)) {
+    return null;
+  }
+  return {
+    instruction: normalizeRecoveryArtifactText(raw.instruction),
+    documents,
+    workProducts,
+    attachments,
+    counts,
+    truncated: asBoolean(raw.truncated, false),
+  };
+}
+
 function normalizePaperclipWakeRecovery(value: unknown): PaperclipWakeRecovery | null {
   const recovery = parseObject(value);
   const cause = asString(recovery.cause, "").trim() || null;
@@ -737,6 +868,7 @@ function normalizePaperclipWakeRecovery(value: unknown): PaperclipWakeRecovery |
     maxAttempts: typeof recovery.maxAttempts === "number" ? recovery.maxAttempts : null,
     nextAction: asString(recovery.nextAction, "").trim() || null,
     routingFallbackReason: asString(recovery.routingFallbackReason, "").trim() || null,
+    artifactInventory: normalizePaperclipWakeArtifactInventory(recovery.artifactInventory),
   };
 }
 
@@ -1350,6 +1482,7 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
   const livenessContinuation = normalizePaperclipWakeLivenessContinuation(payload.livenessContinuation);
   const taskWatchdog = normalizePaperclipWakeTaskWatchdog(payload.taskWatchdog);
   const recovery = normalizePaperclipWakeRecovery(payload.recovery);
+  const artifactInventory = normalizePaperclipWakeArtifactInventory(payload.artifactInventory);
   const childIssueSummaries = Array.isArray(payload.childIssueSummaries)
     ? payload.childIssueSummaries
         .map((entry) => normalizePaperclipWakeChildIssueSummary(entry))
@@ -1370,13 +1503,14 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
   const checkboxSelection = normalizePaperclipWakeCheckboxSelection(payload.checkboxSelection);
   const executionWorkspace = normalizePaperclipWakeExecutionWorkspace(payload.executionWorkspace);
   const agentMessage = normalizePaperclipWakeAgentMessage(payload.agentMessage);
-  if (comments.length === 0 && commentIds.length === 0 && annotationDeltas.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !continuationSummary && !planReviewContext && !documentReviewContext && !livenessContinuation && !taskWatchdog && !checkboxSelection && !executionWorkspace && !agentMessage && !recovery && !normalizePaperclipWakeIssue(payload.issue)) {
+  if (comments.length === 0 && commentIds.length === 0 && annotationDeltas.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !continuationSummary && !planReviewContext && !documentReviewContext && !livenessContinuation && !taskWatchdog && !checkboxSelection && !executionWorkspace && !agentMessage && !recovery && !artifactInventory && !normalizePaperclipWakeIssue(payload.issue)) {
     return null;
   }
 
   return {
     reason: asString(payload.reason, "").trim() || null,
     recovery,
+    artifactInventory,
     issue: normalizePaperclipWakeIssue(payload.issue),
     checkedOutByHarness: asBoolean(payload.checkedOutByHarness, false),
     simplifiedEnglishInteractions: asBoolean(payload.simplifiedEnglishInteractions, false),
@@ -1545,6 +1679,11 @@ export function renderPaperclipWakePrompt(
       lines.push(`[${label.trim().toLowerCase()} truncated]`);
     }
   };
+  const renderArtifactMetadata = (metadata: Record<string, unknown>) => {
+    if (Object.keys(metadata).length === 0) return null;
+    const text = JSON.stringify(metadata);
+    return text.length > 800 ? `${text.slice(0, 797)}...` : text;
+  };
 
   const executionContractLines = recoveryScoped
     ? [
@@ -1617,6 +1756,57 @@ export function renderPaperclipWakePrompt(
         ...executionContractLines,
         ...wakeSummaryLines,
       ];
+
+  const artifactInventory = normalized.artifactInventory ?? recovery?.artifactInventory;
+  if (artifactInventory) {
+    lines.push("", "## Existing task evidence to reuse");
+    lines.push(
+      artifactInventory.instruction ??
+        "Inspect and reuse existing task artifacts before retrying source retrieval.",
+    );
+    lines.push(
+      `Counts: ${artifactInventory.counts.documents} document(s), ` +
+        `${artifactInventory.counts.workProducts} work product(s), ` +
+        `${artifactInventory.counts.attachments} uploaded attachment(s).`,
+    );
+    if (artifactInventory.attachments.length > 0) {
+      lines.push("", "Uploaded attachments:");
+      for (const attachment of artifactInventory.attachments) {
+        const label = attachment.filename ?? attachment.id ?? "attachment";
+        const details = [
+          attachment.contentType,
+          attachment.byteSize ? `${attachment.byteSize} bytes` : null,
+          attachment.createdByAgentId ? `agent ${attachment.createdByAgentId}` : null,
+        ].filter(Boolean).join(", ");
+        lines.push(`- ${label}${details ? ` (${details})` : ""}`);
+        if (attachment.contentPath) lines.push(`  content: ${attachment.contentPath}`);
+        if (attachment.downloadPath) lines.push(`  download: ${attachment.downloadPath}`);
+      }
+    }
+    if (artifactInventory.documents.length > 0) {
+      lines.push("", "Issue documents / extracted text:");
+      for (const document of artifactInventory.documents) {
+        const revision = document.latestRevisionNumber ? ` revision #${document.latestRevisionNumber}` : "";
+        lines.push(`- ${document.key ?? document.id ?? "document"}${document.title ? `: ${document.title}` : ""}${revision}`);
+      }
+    }
+    if (artifactInventory.workProducts.length > 0) {
+      lines.push("", "Work products / evidence rows:");
+      for (const product of artifactInventory.workProducts) {
+        const state = [product.status, product.reviewState && product.reviewState !== "none" ? product.reviewState : null]
+          .filter(Boolean)
+          .join(", ");
+        lines.push(`- ${product.title ?? product.type ?? product.id ?? "work product"}${state ? ` (${state})` : ""}`);
+        if (product.summary) lines.push(`  summary: ${product.summary}`);
+        if (product.url) lines.push(`  url: ${product.url}`);
+        const metadata = renderArtifactMetadata(product.metadata);
+        if (metadata) lines.push(`  metadata: ${metadata}`);
+      }
+    }
+    if (artifactInventory.truncated) {
+      lines.push("[existing task evidence truncated; fetch the task artifacts before retrying source retrieval]");
+    }
+  }
 
   if (normalized.issue?.status) {
     lines.push(`- issue status: ${normalized.issue.status}`);

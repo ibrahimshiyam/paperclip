@@ -903,6 +903,83 @@ describe("renderPaperclipWakePrompt", () => {
     );
   });
 
+  it("prioritizes uploaded PDFs over fetch-pdf in active literature wakes", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_commented",
+      issue: {
+        id: "29ced891-38d1-4cb3-a985-ea12090e8635",
+        identifier: "ACA-8",
+        title: "Deep read paper: A Survey on Knowledge Graphs: Representation, Acquisition, and Applications",
+        status: "in_progress",
+      },
+      artifactInventory: {
+        instruction:
+          "Before source retrieval or paywall workarounds, inspect and reuse these existing task artifacts. " +
+          "An uploaded PDF attachment is the canonical local full-text input for literature/deep-read work; download it from its content path into the workspace and do not invoke fetch-pdf or re-download from a URL while it is available. " +
+          "A link-only source remains a source candidate and needs transparent verification/failure handling. " +
+          "Do not re-download or re-extract material already represented by extracted documents or work products. " +
+          "Persist extraction state as a document or work product summary with document identity, extraction completeness, page coverage, evidence rows, and next gates before ending the run. " +
+          "Do not mark the issue done solely because evidence exists; validate it and record a legitimate disposition.",
+        counts: { documents: 1, workProducts: 1, attachments: 1 },
+        attachments: [
+          {
+            id: "b8394ae9-d898-4358-8666-a983792c0007",
+            assetId: "e8c36c6f-f1e4-4dff-b733-045bd8feb269",
+            filename: "2002.00388v4.pdf",
+            contentType: "application/pdf",
+            byteSize: 2097312,
+            createdByAgentId: null,
+            contentPath: "/api/attachments/b8394ae9-d898-4358-8666-a983792c0007/content",
+            downloadPath: "/api/attachments/b8394ae9-d898-4358-8666-a983792c0007/content?download=1",
+            updatedAt: "2026-08-26T15:03:15.345Z",
+          },
+        ],
+        documents: [
+          {
+            id: "afd97f05-4d9d-4ebd-a435-ea1b502de043",
+            key: "continuation-summary",
+            title: "Continuation Summary",
+            latestRevisionNumber: 20,
+            updatedAt: "2026-08-26T14:48:54.053Z",
+          },
+        ],
+        workProducts: [
+          {
+            id: "wp-1",
+            type: "deep_read_extraction_state",
+            title: "ACA-8 extraction inventory",
+            status: "ready_for_review",
+            reviewState: "none",
+            url: null,
+            summary: "PDF extraction completed; page coverage 1-20; evidence rows E01-E03 need validation.",
+            metadata: {
+              documentIdentity: "arXiv:2002.00388v4",
+              extractionComplete: true,
+              pageCoverage: "1-20",
+              evidenceRows: ["E01", "E02", "E03"],
+              nextGate: "review validation",
+            },
+            updatedAt: "2026-08-26T14:50:00.000Z",
+          },
+        ],
+        truncated: false,
+      },
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      comments: [],
+      fallbackFetchNeeded: false,
+    });
+
+    expect(prompt).toContain("## Existing task evidence to reuse");
+    expect(prompt).toContain("2002.00388v4.pdf (application/pdf, 2097312 bytes)");
+    expect(prompt).toContain("/api/attachments/b8394ae9-d898-4358-8666-a983792c0007/content");
+    expect(prompt).toContain("do not invoke fetch-pdf");
+    expect(prompt).toContain("link-only source remains a source candidate");
+    expect(prompt).toContain("Do not re-download or re-extract");
+    expect(prompt).toContain("page coverage 1-20");
+    expect(prompt).toContain("\"nextGate\":\"review validation\"");
+    expect(prompt).not.toContain("No documents or evidence generated");
+  });
+
   it("leaves the execution contract to the heartbeat template on fresh scoped wake prompts", () => {
     const prompt = renderPaperclipWakePrompt({
       reason: "issue_assigned",

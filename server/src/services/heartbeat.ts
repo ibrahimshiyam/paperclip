@@ -453,6 +453,7 @@ const MAX_INLINE_WAKE_COMMENTS = 8;
 const MAX_INLINE_WAKE_COMMENT_BODY_CHARS = 4_000;
 const MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS = 12_000;
 const MAX_INLINE_WAKE_ISSUE_DESCRIPTION_CHARS = 12_000;
+const MAX_INLINE_RECOVERY_ARTIFACTS = 8;
 const MAX_AGENT_SESSION_MESSAGE_CHARS = 12_000;
 const execFile = promisify(execFileCallback);
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
@@ -5630,6 +5631,118 @@ export function mergeCoalescedContextSnapshot(
   return merged;
 }
 
+async function buildTaskArtifactInventory(db: Db, companyId: string, issueId: string) {
+  const [documentRows, workProductRows, attachmentRows] = await Promise.all([
+    db
+      .select({
+        id: documents.id,
+        key: issueDocuments.key,
+        title: documents.title,
+        latestRevisionNumber: documents.latestRevisionNumber,
+        updatedAt: documents.updatedAt,
+      })
+      .from(issueDocuments)
+      .innerJoin(
+        documents,
+        and(eq(documents.id, issueDocuments.documentId), eq(documents.companyId, issueDocuments.companyId)),
+      )
+      .where(and(eq(issueDocuments.companyId, companyId), eq(issueDocuments.issueId, issueId)))
+      .orderBy(desc(documents.updatedAt), desc(documents.id))
+      .limit(MAX_INLINE_RECOVERY_ARTIFACTS + 1),
+    db
+      .select({
+        id: issueWorkProducts.id,
+        type: issueWorkProducts.type,
+        title: issueWorkProducts.title,
+        status: issueWorkProducts.status,
+        reviewState: issueWorkProducts.reviewState,
+        url: issueWorkProducts.url,
+        summary: issueWorkProducts.summary,
+        metadata: issueWorkProducts.metadata,
+        updatedAt: issueWorkProducts.updatedAt,
+      })
+      .from(issueWorkProducts)
+      .where(and(eq(issueWorkProducts.companyId, companyId), eq(issueWorkProducts.issueId, issueId)))
+      .orderBy(desc(issueWorkProducts.updatedAt), desc(issueWorkProducts.id))
+      .limit(MAX_INLINE_RECOVERY_ARTIFACTS + 1),
+    db
+      .select({
+        id: issueAttachments.id,
+        assetId: assets.id,
+        filename: assets.originalFilename,
+        contentType: assets.contentType,
+        byteSize: assets.byteSize,
+        createdByAgentId: assets.createdByAgentId,
+        updatedAt: issueAttachments.updatedAt,
+      })
+      .from(issueAttachments)
+      .innerJoin(
+        assets,
+        and(eq(assets.id, issueAttachments.assetId), eq(assets.companyId, issueAttachments.companyId)),
+      )
+      .where(and(eq(issueAttachments.companyId, companyId), eq(issueAttachments.issueId, issueId)))
+      .orderBy(desc(issueAttachments.updatedAt), desc(issueAttachments.id))
+      .limit(MAX_INLINE_RECOVERY_ARTIFACTS + 1),
+  ]);
+
+  const truncated =
+    documentRows.length > MAX_INLINE_RECOVERY_ARTIFACTS ||
+    workProductRows.length > MAX_INLINE_RECOVERY_ARTIFACTS ||
+    attachmentRows.length > MAX_INLINE_RECOVERY_ARTIFACTS;
+  if (!truncated && documentRows.length === 0 && workProductRows.length === 0 && attachmentRows.length === 0) {
+    return null;
+  }
+  const trimRows = <T>(rows: T[]) => rows.slice(0, MAX_INLINE_RECOVERY_ARTIFACTS);
+
+  return {
+    instruction:
+      "Before source retrieval or paywall workarounds, inspect and reuse these existing task artifacts. " +
+      "An uploaded PDF attachment is the canonical local full-text input for literature/deep-read work; download it from its content path into the workspace and do not invoke fetch-pdf or re-download from a URL while it is available. " +
+      "A link-only source remains a source candidate and needs transparent verification/failure handling. " +
+      "Do not re-download or re-extract material already represented by extracted documents or work products. " +
+      "Persist extraction state as a document or work product summary with document identity, extraction completeness, page coverage, evidence rows, and next gates before ending the run. " +
+      "Do not mark the issue done solely because evidence exists; validate it and record a legitimate disposition.",
+    documents: trimRows(documentRows).map((row) => ({
+      id: row.id,
+      key: row.key,
+      title: row.title ?? row.key,
+      latestRevisionNumber: row.latestRevisionNumber,
+      updatedAt: row.updatedAt.toISOString(),
+    })),
+    workProducts: trimRows(workProductRows).map((row) => ({
+      id: row.id,
+      type: row.type,
+      title: row.title,
+      status: row.status,
+      reviewState: row.reviewState,
+      url: row.url,
+      summary: row.summary,
+      metadata: row.metadata,
+      updatedAt: row.updatedAt.toISOString(),
+    })),
+    attachments: trimRows(attachmentRows).map((row) => {
+      const contentPath = `/api/attachments/${row.id}/content`;
+      return {
+        id: row.id,
+        assetId: row.assetId,
+        filename: row.filename ?? "Attachment",
+        contentType: row.contentType,
+        byteSize: row.byteSize,
+        createdByAgentId: row.createdByAgentId,
+        contentPath,
+        downloadPath: `${contentPath}?download=1`,
+        updatedAt: row.updatedAt.toISOString(),
+      };
+    }),
+    counts: {
+      documents: documentRows.length,
+      workProducts: workProductRows.length,
+      attachments: attachmentRows.length,
+    },
+    truncated,
+  };
+}
+
 export async function buildPaperclipWakePayload(input: {
   db: Db;
   companyId: string;
@@ -5877,6 +5990,9 @@ export async function buildPaperclipWakePayload(input: {
       .then((rows) => rows[0] ?? null)
     : null;
   const recoveryEvidence = parseObject(recoveryAction?.evidence);
+  const artifactInventory = issueId
+    ? await buildTaskArtifactInventory(input.db, input.companyId, issueId)
+    : null;
   const originalAssigneeId = recoveryAction?.returnOwnerAgentId ?? recoveryAction?.previousOwnerAgentId ?? null;
   const originalAssignee = originalAssigneeId
     ? await input.db
@@ -5901,8 +6017,10 @@ export async function buildPaperclipWakePayload(input: {
           maxAttempts: recoveryAction?.maxAttempts ?? null,
           nextAction: recoveryAction?.nextAction ?? null,
           routingFallbackReason: readNonEmptyString(recoveryEvidence.routingFallbackReason),
+          artifactInventory,
         }
       : null,
+    artifactInventory,
     issue: issueSummary
       ? {
           id: issueSummary.id,

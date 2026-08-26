@@ -104,6 +104,7 @@ vi.mock("../adapters/index.ts", async () => {
 import {
   INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
   INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
+  buildPaperclipWakePayload,
   heartbeatService,
   redactDetectedSuccessfulRunProgressSummaryForBoard,
   redactSuccessfulRunHandoffEvidence,
@@ -3964,6 +3965,121 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         }),
       ]),
     });
+  });
+
+  it("includes uploaded PDFs and extracted evidence in ordinary issue wake payloads", async () => {
+    const { companyId, agentId, issueId } = await seedQueuedIssueRunFixture();
+    const documentId = randomUUID();
+    const revisionId = randomUUID();
+    await db.insert(documents).values({
+      id: documentId,
+      companyId,
+      title: "Continuation Summary",
+      format: "markdown",
+      latestBody: "PDF extraction completed; page coverage 1-20; evidence rows E01-E03 need validation.",
+      latestRevisionId: revisionId,
+      latestRevisionNumber: 20,
+      createdByAgentId: agentId,
+      updatedByAgentId: agentId,
+    });
+    await db.insert(documentRevisions).values({
+      id: revisionId,
+      companyId,
+      documentId,
+      revisionNumber: 20,
+      title: "Continuation Summary",
+      format: "markdown",
+      body: "PDF extraction completed; page coverage 1-20; evidence rows E01-E03 need validation.",
+      createdByAgentId: agentId,
+    });
+    await db.insert(issueDocuments).values({
+      companyId,
+      issueId,
+      documentId,
+      key: "continuation-summary",
+    });
+    await db.insert(issueWorkProducts).values({
+      companyId,
+      issueId,
+      type: "deep_read_extraction_state",
+      provider: "paperclip",
+      title: "ACA-8 extraction inventory",
+      status: "ready_for_review",
+      summary: "PDF extraction completed; page coverage 1-20; evidence rows E01-E03 need validation.",
+      metadata: {
+        documentIdentity: "arXiv:2002.00388v4",
+        extractionComplete: true,
+        pageCoverage: "1-20",
+        evidenceRows: ["E01", "E02", "E03"],
+        nextGate: "review validation",
+      },
+    });
+    const assetId = randomUUID();
+    await db.insert(assets).values({
+      id: assetId,
+      companyId,
+      provider: "test",
+      objectKey: `${companyId}/issues/${issueId}/2002.00388v4.pdf`,
+      contentType: "application/pdf",
+      byteSize: 2_097_312,
+      sha256: "2002-00388v4-sha256",
+      originalFilename: "2002.00388v4.pdf",
+      createdByAgentId: null,
+    });
+    const [attachment] = await db
+      .insert(issueAttachments)
+      .values({ companyId, issueId, assetId })
+      .returning();
+
+    const payload = await buildPaperclipWakePayload({
+      db,
+      companyId,
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "issue_assigned",
+      },
+    });
+
+    expect(payload.recovery).toBeNull();
+    expect(payload.artifactInventory).toMatchObject({
+      counts: { documents: 1, workProducts: 1, attachments: 1 },
+      attachments: [
+        expect.objectContaining({
+          id: attachment?.id,
+          assetId,
+          filename: "2002.00388v4.pdf",
+          contentType: "application/pdf",
+          byteSize: 2_097_312,
+          contentPath: `/api/attachments/${attachment?.id}/content`,
+          downloadPath: `/api/attachments/${attachment?.id}/content?download=1`,
+        }),
+      ],
+      documents: [
+        expect.objectContaining({
+          key: "continuation-summary",
+          title: "Continuation Summary",
+          latestRevisionNumber: 20,
+        }),
+      ],
+      workProducts: [
+        expect.objectContaining({
+          type: "deep_read_extraction_state",
+          title: "ACA-8 extraction inventory",
+          status: "ready_for_review",
+          metadata: expect.objectContaining({
+            documentIdentity: "arXiv:2002.00388v4",
+            extractionComplete: true,
+            pageCoverage: "1-20",
+            evidenceRows: ["E01", "E02", "E03"],
+            nextGate: "review validation",
+          }),
+        }),
+      ],
+    });
+    expect(payload.artifactInventory?.instruction).toContain("do not invoke fetch-pdf");
+    expect(payload.artifactInventory?.instruction).toContain("A link-only source remains a source candidate");
+    expect(JSON.stringify(payload.artifactInventory)).not.toContain("No documents or evidence generated");
   });
 
   it("redacts secret-bearing successful-run detected progress before handoff disclosure", async () => {

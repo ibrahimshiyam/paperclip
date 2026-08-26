@@ -377,6 +377,429 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
   );
 
   it(
+    "backs up and restores scheduler session and recovery safeguard state",
+    async () => {
+      const sourceConnectionString = await createTempDatabase();
+      const restoreConnectionString = await createSiblingDatabase(
+        sourceConnectionString,
+        "paperclip_safeguard_restore_target",
+      );
+      const backupDir = createTempDir("paperclip-db-safeguard-backup-");
+      const sourceSql = postgres(sourceConnectionString, { max: 1, onnotice: () => {} });
+      const restoreSql = postgres(restoreConnectionString, { max: 1, onnotice: () => {} });
+
+      try {
+        await sourceSql.unsafe(`
+          CREATE TABLE "public"."routines" (
+            "id" uuid PRIMARY KEY,
+            "company_id" uuid NOT NULL,
+            "title" text NOT NULL,
+            "description" text NOT NULL,
+            "status" text NOT NULL,
+            "schedule" jsonb NOT NULL
+          );
+          CREATE TABLE "public"."routine_revisions" (
+            "id" uuid PRIMARY KEY,
+            "company_id" uuid NOT NULL,
+            "routine_id" uuid NOT NULL REFERENCES "public"."routines"("id") ON DELETE CASCADE,
+            "revision_number" integer NOT NULL,
+            "title" text NOT NULL,
+            "description" text NOT NULL,
+            "snapshot" jsonb NOT NULL
+          );
+          CREATE TABLE "public"."routine_runs" (
+            "id" uuid PRIMARY KEY,
+            "routine_id" uuid NOT NULL REFERENCES "public"."routines"("id") ON DELETE CASCADE,
+            "company_id" uuid NOT NULL,
+            "status" text NOT NULL,
+            "issue_id" uuid,
+            "created_at" timestamptz NOT NULL
+          );
+          CREATE TABLE "public"."company_skills" (
+            "id" uuid PRIMARY KEY,
+            "company_id" uuid NOT NULL,
+            "key" text NOT NULL,
+            "name" text NOT NULL,
+            "markdown" text NOT NULL,
+            "current_version_id" uuid
+          );
+          CREATE TABLE "public"."company_skill_versions" (
+            "id" uuid PRIMARY KEY,
+            "company_id" uuid NOT NULL,
+            "company_skill_id" uuid NOT NULL REFERENCES "public"."company_skills"("id") ON DELETE CASCADE,
+            "revision_number" integer NOT NULL,
+            "file_inventory" jsonb NOT NULL
+          );
+          CREATE TABLE "public"."agent_task_sessions" (
+            "id" uuid PRIMARY KEY,
+            "company_id" uuid NOT NULL,
+            "agent_id" uuid NOT NULL,
+            "adapter_type" text NOT NULL,
+            "task_key" text NOT NULL,
+            "session_id" text NOT NULL,
+            "last_run_id" uuid,
+            "updated_at" timestamptz NOT NULL,
+            CONSTRAINT "agent_task_sessions_company_agent_adapter_task_uniq"
+              UNIQUE ("company_id", "agent_id", "adapter_type", "task_key")
+          );
+          CREATE TABLE "public"."agent_config_revisions" (
+            "id" uuid PRIMARY KEY,
+            "company_id" uuid NOT NULL,
+            "agent_id" uuid NOT NULL,
+            "source" text NOT NULL,
+            "changed_keys" jsonb NOT NULL,
+            "before_config" jsonb,
+            "after_config" jsonb NOT NULL,
+            "created_at" timestamptz NOT NULL
+          );
+          CREATE TABLE "public"."issues" (
+            "id" uuid PRIMARY KEY,
+            "company_id" uuid NOT NULL,
+            "slug" text NOT NULL,
+            "title" text NOT NULL,
+            "status" text NOT NULL,
+            "unblock_descriptor" jsonb
+          );
+          CREATE TABLE "public"."heartbeat_runs" (
+            "id" uuid PRIMARY KEY,
+            "company_id" uuid NOT NULL,
+            "agent_id" uuid NOT NULL,
+            "issue_id" uuid REFERENCES "public"."issues"("id") ON DELETE SET NULL,
+            "status" text NOT NULL,
+            "error_code" text,
+            "context_snapshot" jsonb NOT NULL,
+            "result_json" jsonb,
+            "last_output_at" timestamptz,
+            "finished_at" timestamptz
+          );
+          CREATE TABLE "public"."agent_wakeup_requests" (
+            "id" uuid PRIMARY KEY,
+            "company_id" uuid NOT NULL,
+            "agent_id" uuid NOT NULL,
+            "issue_id" uuid REFERENCES "public"."issues"("id") ON DELETE CASCADE,
+            "status" text NOT NULL,
+            "reason" text NOT NULL,
+            "context" jsonb NOT NULL
+          );
+          CREATE TABLE "public"."issue_recovery_actions" (
+            "id" uuid PRIMARY KEY,
+            "company_id" uuid NOT NULL,
+            "issue_id" uuid NOT NULL REFERENCES "public"."issues"("id") ON DELETE CASCADE,
+            "status" text NOT NULL,
+            "reason" text NOT NULL,
+            "details" jsonb NOT NULL
+          );
+          CREATE TABLE "public"."documents" (
+            "id" uuid PRIMARY KEY,
+            "company_id" uuid NOT NULL,
+            "title" text NOT NULL,
+            "latest_body" text NOT NULL
+          );
+          CREATE TABLE "public"."issue_documents" (
+            "issue_id" uuid NOT NULL REFERENCES "public"."issues"("id") ON DELETE CASCADE,
+            "document_id" uuid NOT NULL REFERENCES "public"."documents"("id") ON DELETE CASCADE,
+            "company_id" uuid NOT NULL,
+            "key" text NOT NULL,
+            PRIMARY KEY ("issue_id", "document_id")
+          );
+          CREATE TABLE "public"."issue_work_products" (
+            "id" uuid PRIMARY KEY,
+            "company_id" uuid NOT NULL,
+            "issue_id" uuid NOT NULL REFERENCES "public"."issues"("id") ON DELETE CASCADE,
+            "kind" text NOT NULL,
+            "metadata" jsonb NOT NULL
+          );
+          CREATE TABLE "public"."assets" (
+            "id" uuid PRIMARY KEY,
+            "company_id" uuid NOT NULL,
+            "provider" text NOT NULL,
+            "object_key" text NOT NULL,
+            "content_type" text NOT NULL,
+            "byte_size" bigint NOT NULL,
+            "sha256" text NOT NULL,
+            "original_filename" text,
+            "created_by_agent_id" uuid
+          );
+          CREATE TABLE "public"."issue_attachments" (
+            "id" uuid PRIMARY KEY,
+            "company_id" uuid NOT NULL,
+            "issue_id" uuid NOT NULL REFERENCES "public"."issues"("id") ON DELETE CASCADE,
+            "asset_id" uuid NOT NULL REFERENCES "public"."assets"("id") ON DELETE CASCADE
+          );
+        `);
+        await sourceSql.unsafe(`
+          INSERT INTO "public"."routines" ("id", "company_id", "title", "description", "status", "schedule")
+          VALUES (
+            '11111111-1111-4111-8111-111111111111',
+            'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+            'Daily job research',
+            'Continue the Remote Tech Roles history.',
+            'active',
+            '{"cron":"0 8 * * *","timezone":"Asia/Male"}'
+          );
+          INSERT INTO "public"."routine_revisions" (
+            "id", "company_id", "routine_id", "revision_number", "title", "description", "snapshot"
+          )
+          VALUES (
+            '10101010-1010-4010-8010-101010101010',
+            'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+            '11111111-1111-4111-8111-111111111111',
+            7,
+            'Daily job research',
+            'Preserve stable routine task sessions and inspect recovery evidence before terminalizing.',
+            '{"taskKey":"routine:11111111-1111-4111-8111-111111111111","policy":"stable-session-history"}'
+          );
+          INSERT INTO "public"."company_skills" (
+            "id", "company_id", "key", "name", "markdown", "current_version_id"
+          )
+          VALUES (
+            '14141414-1414-4414-8414-141414141414',
+            'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+            'company/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/evidence-grounded-literature-review',
+            'Evidence-Grounded Literature Review',
+            'Uploaded PDFs are canonical local full-text inputs; invalid citations are quarantined; inaccessible lawful full text receives a named deferred blocker and the queue continues.',
+            '15151515-1515-4515-8515-151515151515'
+          );
+          INSERT INTO "public"."company_skill_versions" (
+            "id", "company_id", "company_skill_id", "revision_number", "file_inventory"
+          )
+          VALUES (
+            '15151515-1515-4515-8515-151515151515',
+            'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+            '14141414-1414-4414-8414-141414141414',
+            3,
+            '{"files":[{"path":"SKILL.md","sha256":"skill-sha"}]}'
+          );
+          INSERT INTO "public"."issues" ("id", "company_id", "slug", "title", "status", "unblock_descriptor")
+          VALUES (
+            '22222222-2222-4222-8222-222222222222',
+            'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+            'PER-3',
+            'Migrate and Verify Remote Tech Roles History',
+            'blocked',
+            '{"type":"missing_live_path","owner":"board","action":"restore scheduled prompt/session handoff"}'
+          );
+          INSERT INTO "public"."routine_runs" ("id", "routine_id", "company_id", "status", "issue_id", "created_at")
+          VALUES (
+            '33333333-3333-4333-8333-333333333333',
+            '11111111-1111-4111-8111-111111111111',
+            'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+            'running',
+            '22222222-2222-4222-8222-222222222222',
+            '2026-08-26T04:10:00Z'
+          );
+          INSERT INTO "public"."heartbeat_runs" (
+            "id", "company_id", "agent_id", "issue_id", "status", "error_code",
+            "context_snapshot", "result_json", "last_output_at", "finished_at"
+          )
+          VALUES (
+            '44444444-4444-4444-8444-444444444444',
+            'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+            'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+            '22222222-2222-4222-8222-222222222222',
+            'timed_out',
+            'codex_output_inactivity_monitor',
+            '{"taskKey":"routine:11111111-1111-4111-8111-111111111111","originKind":"routine","originId":"11111111-1111-4111-8111-111111111111"}',
+            '{"livenessState":"failed","reason":"critical output silence"}',
+            '2026-08-26T04:11:00Z',
+            '2026-08-26T14:00:00Z'
+          );
+          INSERT INTO "public"."agent_task_sessions" (
+            "id", "company_id", "agent_id", "adapter_type", "task_key", "session_id", "last_run_id", "updated_at"
+          )
+          VALUES (
+            '55555555-5555-4555-8555-555555555555',
+            'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+            'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+            'codex',
+            'routine:11111111-1111-4111-8111-111111111111',
+            'ses_daily_remote_roles',
+            '44444444-4444-4444-8444-444444444444',
+            '2026-08-26T14:00:00Z'
+          );
+          INSERT INTO "public"."agent_config_revisions" (
+            "id", "company_id", "agent_id", "source", "changed_keys", "before_config", "after_config", "created_at"
+          )
+          VALUES (
+            '16161616-1616-4616-8616-161616161616',
+            'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+            'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+            'managed_instruction_policy_update',
+            '["adapterConfig","capabilities"]',
+            NULL,
+            '{"adapterConfig":{"instructionsBundleMode":"managed","paperclipSkillSync":{"desiredSkills":["company/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/evidence-grounded-literature-review"]}}}',
+            '2026-08-26T14:05:00Z'
+          );
+          INSERT INTO "public"."agent_wakeup_requests" ("id", "company_id", "agent_id", "issue_id", "status", "reason", "context")
+          VALUES (
+            '66666666-6666-4666-8666-666666666666',
+            'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+            'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+            '22222222-2222-4222-8222-222222222222',
+            'pending',
+            'routine_schedule',
+            '{"taskKey":"routine:11111111-1111-4111-8111-111111111111"}'
+          );
+          INSERT INTO "public"."issue_recovery_actions" ("id", "company_id", "issue_id", "status", "reason", "details")
+          VALUES (
+            '77777777-7777-4777-8777-777777777777',
+            'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+            '22222222-2222-4222-8222-222222222222',
+            'active',
+            'missing_disposition',
+            '{"sourceState":{"documentCount":1,"attachmentCount":1},"unblockDescriptorRequired":true}'
+          );
+          INSERT INTO "public"."documents" ("id", "company_id", "title", "latest_body")
+          VALUES (
+            '88888888-8888-4888-8888-888888888888',
+            'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+            'Evidence rows',
+            'E01,E02,E03'
+          );
+          INSERT INTO "public"."issue_documents" ("issue_id", "document_id", "company_id", "key")
+          VALUES (
+            '22222222-2222-4222-8222-222222222222',
+            '88888888-8888-4888-8888-888888888888',
+            'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+            'evidence'
+          );
+          INSERT INTO "public"."issue_work_products" ("id", "company_id", "issue_id", "kind", "metadata")
+          VALUES (
+            '99999999-9999-4999-8999-999999999999',
+            'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+            '22222222-2222-4222-8222-222222222222',
+            'csv_results',
+            '{"rows":3}'
+          );
+          INSERT INTO "public"."assets" (
+            "id", "company_id", "provider", "object_key", "content_type", "byte_size", "sha256",
+            "original_filename", "created_by_agent_id"
+          )
+          VALUES (
+            '12121212-1212-4212-8212-121212121212',
+            'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+            'local_disk',
+            'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/per-3/evidence.pdf',
+            'application/pdf',
+            2048,
+            'abc123',
+            'evidence.pdf',
+            'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+          );
+          INSERT INTO "public"."issue_attachments" ("id", "company_id", "issue_id", "asset_id")
+          VALUES (
+            '13131313-1313-4313-8313-131313131313',
+            'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+            '22222222-2222-4222-8222-222222222222',
+            '12121212-1212-4212-8212-121212121212'
+          );
+        `);
+
+        const result = await runDatabaseBackup({
+          connectionString: sourceConnectionString,
+          backupDir,
+          retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+          filenamePrefix: "paperclip-safeguard-test",
+        });
+
+        await runDatabaseRestore({
+          connectionString: restoreConnectionString,
+          backupFile: result.backupFile,
+        });
+
+        const [restored] = await restoreSql.unsafe<{
+          routine_title: string;
+          session_id: string;
+          task_key: string;
+          run_status: string;
+          run_error_code: string;
+          wakeup_task_key: string;
+          routine_revision_policy: string;
+          skill_policy: string;
+          skill_version_revision: number;
+          agent_skill_count: number;
+          issue_status: string;
+          unblock_action: string;
+          recovery_document_count: number;
+          document_body: string;
+          work_product_rows: number;
+          attachment_object_key: string;
+        }[]>(`
+          SELECT
+            r."title" AS "routine_title",
+            s."session_id",
+            s."task_key",
+            hr."status" AS "run_status",
+            hr."error_code" AS "run_error_code",
+            awr."context" ->> 'taskKey' AS "wakeup_task_key",
+            rr."snapshot" ->> 'policy' AS "routine_revision_policy",
+            cs."markdown" AS "skill_policy",
+            csv."revision_number" AS "skill_version_revision",
+            jsonb_array_length(acr."after_config" #> '{adapterConfig,paperclipSkillSync,desiredSkills}') AS "agent_skill_count",
+            i."status" AS "issue_status",
+            i."unblock_descriptor" ->> 'action' AS "unblock_action",
+            (ira."details" -> 'sourceState' ->> 'documentCount')::int AS "recovery_document_count",
+            d."latest_body" AS "document_body",
+            (iwp."metadata" ->> 'rows')::int AS "work_product_rows",
+            a."object_key" AS "attachment_object_key"
+          FROM "public"."routines" r
+          JOIN "public"."agent_task_sessions" s
+            ON s."task_key" = 'routine:' || r."id"::text
+          JOIN "public"."heartbeat_runs" hr
+            ON hr."id" = s."last_run_id"
+          JOIN "public"."issues" i
+            ON i."id" = hr."issue_id"
+          JOIN "public"."agent_wakeup_requests" awr
+            ON awr."issue_id" = i."id"
+          JOIN "public"."routine_revisions" rr
+            ON rr."routine_id" = r."id"
+          JOIN "public"."company_skills" cs
+            ON cs."company_id" = r."company_id"
+          JOIN "public"."company_skill_versions" csv
+            ON csv."id" = cs."current_version_id"
+          JOIN "public"."agent_config_revisions" acr
+            ON acr."agent_id" = s."agent_id"
+          JOIN "public"."issue_recovery_actions" ira
+            ON ira."issue_id" = i."id"
+          JOIN "public"."issue_documents" idoc
+            ON idoc."issue_id" = i."id"
+          JOIN "public"."documents" d
+            ON d."id" = idoc."document_id"
+          JOIN "public"."issue_work_products" iwp
+            ON iwp."issue_id" = i."id"
+          JOIN "public"."issue_attachments" ia
+            ON ia."issue_id" = i."id"
+          JOIN "public"."assets" a
+            ON a."id" = ia."asset_id"
+        `);
+
+        expect(restored).toEqual({
+          routine_title: "Daily job research",
+          session_id: "ses_daily_remote_roles",
+          task_key: "routine:11111111-1111-4111-8111-111111111111",
+          run_status: "timed_out",
+          run_error_code: "codex_output_inactivity_monitor",
+          wakeup_task_key: "routine:11111111-1111-4111-8111-111111111111",
+          routine_revision_policy: "stable-session-history",
+          skill_policy: "Uploaded PDFs are canonical local full-text inputs; invalid citations are quarantined; inaccessible lawful full text receives a named deferred blocker and the queue continues.",
+          skill_version_revision: 3,
+          agent_skill_count: 1,
+          issue_status: "blocked",
+          unblock_action: "restore scheduled prompt/session handoff",
+          recovery_document_count: 1,
+          document_body: "E01,E02,E03",
+          work_product_rows: 3,
+          attachment_object_key: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/per-3/evidence.pdf",
+        });
+      } finally {
+        await sourceSql.end();
+        await restoreSql.end();
+      }
+    },
+    60_000,
+  );
+
+  it(
     "preserves composite foreign key column order without duplicate referenced columns",
     async () => {
       const sourceConnectionString = await createTempDatabase();
