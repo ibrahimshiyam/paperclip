@@ -290,6 +290,19 @@ export const REFERENCED_SOURCE_IGNORE_MAX_ENTRY_COUNT = 10_000;
 export const REFERENCED_SOURCE_IGNORE_MAX_TOTAL_BYTES = 2 * 1024 * 1024;
 
 /**
+ * Bound on the raw `git status --ignored` output `readReferencedSourceGitIgnoredPaths`
+ * lets Node buffer, kept proportionate to
+ * {@link REFERENCED_SOURCE_IGNORE_MAX_TOTAL_BYTES} instead of the far larger
+ * allowance the anchor workspace's general-purpose full-tree reads use. The
+ * parser below still enforces the real entry-count and byte bounds while it
+ * reads each record, so this value only needs headroom for the "!! " prefix
+ * and NUL delimiter on every entry, plus the other (non-ignored) status
+ * lines the same command reports — not room for an oversized ignored-path
+ * list to land in memory in the first place.
+ */
+const REFERENCED_SOURCE_IGNORE_MAX_RAW_BUFFER = REFERENCED_SOURCE_IGNORE_MAX_TOTAL_BYTES * 2;
+
+/**
  * Thrown by {@link readReferencedSourceGitIgnoredPaths} when the parsed
  * ignored-path list breaches {@link REFERENCED_SOURCE_IGNORE_MAX_ENTRY_COUNT}
  * or {@link REFERENCED_SOURCE_IGNORE_MAX_TOTAL_BYTES}, so the caller can
@@ -344,39 +357,59 @@ export async function readReferencedSourceGitIgnoredPaths(
     localDir,
     ["status", "--ignored", "--porcelain=v1", "-z", "--untracked-files=normal"],
     "referenced_source.ignored_files",
-    { timeout: 60_000, maxBuffer: 16 * 1024 * 1024 },
+    { timeout: 60_000, maxBuffer: REFERENCED_SOURCE_IGNORE_MAX_RAW_BUFFER },
   );
+
+  // Read one NUL-delimited record at a time and enforce both bounds while the
+  // ignored-entry list accumulates, instead of splitting and mapping the
+  // whole response into a list first and only then checking its size. A
+  // pathologically large ignore set (a huge repository, or one crafted to
+  // hold many ignored entries) must fail closed the moment it breaches a
+  // bound, without this scan first retaining and transforming the full
+  // oversized response.
+  //
   // Do not trim each entry: `git status -z` already delimits entries with a
   // NUL byte, so a leading or trailing space in an entry is part of the path
   // itself, not padding to remove. A length check finds the one genuinely
-  // empty entry `-z` appends after the last NUL, without eating a real path's
-  // own leading or trailing whitespace.
-  const parsedIgnoredEntries = ignoredResult.stdout
-    .split("\0")
-    .filter((entry) => entry.length > 0)
-    .filter((entry) => entry.startsWith("!! "))
-    .map((entry) => entry.slice(3).replace(/\/+$/, ""))
-    .filter((entry) => entry.length > 0);
-
-  // Enforce both bounds during parsing, before the list sorts and
-  // re-relativizes: a pathologically large ignore set (a huge repository, or
-  // one crafted to hold many ignored entries) must fail closed here rather
-  // than pay the cost of sorting and re-relativizing it first.
-  if (parsedIgnoredEntries.length > REFERENCED_SOURCE_IGNORE_MAX_ENTRY_COUNT) {
-    throw new ReferencedSourceIgnoreScanLimitExceededError(
-      `referenced project ignore scan found more than ${REFERENCED_SOURCE_IGNORE_MAX_ENTRY_COUNT} ignored entries`,
-    );
-  }
+  // empty record `-z` appends after the last NUL, without eating a real
+  // path's own leading or trailing whitespace.
+  const rawIgnored = ignoredResult.stdout;
+  const parsedIgnoredEntries: string[] = [];
   let totalIgnoredBytes = 0;
-  for (const entry of parsedIgnoredEntries) {
+  let recordStart = 0;
+  while (recordStart < rawIgnored.length) {
+    const nulIndex = rawIgnored.indexOf("\0", recordStart);
+    const recordEnd = nulIndex === -1 ? rawIgnored.length : nulIndex;
+    const record = rawIgnored.slice(recordStart, recordEnd);
+    recordStart = nulIndex === -1 ? rawIgnored.length : nulIndex + 1;
+
+    // A record for a status other than "ignored" (a tracked change, an
+    // ordinary untracked file) does not carry the `!! ` prefix and is not
+    // part of the ignored-path list this scan returns.
+    if (record.length === 0 || !record.startsWith("!! ")) {
+      continue;
+    }
+    const entry = record.slice(3).replace(/\/+$/, "");
+    if (entry.length === 0) {
+      continue;
+    }
+
+    if (parsedIgnoredEntries.length + 1 > REFERENCED_SOURCE_IGNORE_MAX_ENTRY_COUNT) {
+      throw new ReferencedSourceIgnoreScanLimitExceededError(
+        `referenced project ignore scan found more than ${REFERENCED_SOURCE_IGNORE_MAX_ENTRY_COUNT} ignored entries`,
+      );
+    }
     totalIgnoredBytes += Buffer.byteLength(entry, "utf8");
     if (totalIgnoredBytes > REFERENCED_SOURCE_IGNORE_MAX_TOTAL_BYTES) {
       throw new ReferencedSourceIgnoreScanLimitExceededError(
         `referenced project ignore scan exceeded ${REFERENCED_SOURCE_IGNORE_MAX_TOTAL_BYTES} UTF-8 bytes of ignored paths`,
       );
     }
+    parsedIgnoredEntries.push(entry);
   }
 
+  // The list is bounded by both checks above, so sorting and re-relativizing
+  // it here never costs more than the accepted bounds allow.
   const ignoredPaths = parsedIgnoredEntries.sort((left, right) => left.localeCompare(right));
 
   return { toplevel, ignoredPaths };

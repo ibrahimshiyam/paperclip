@@ -666,6 +666,64 @@ describe("git workspace sync", () => {
       );
     });
 
+    it("fails closed on the byte bound while it is still accumulating, before it would ever reach a later entry-count breach", async () => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-referenced-bound-order-"));
+      cleanupDirs.push(rootDir);
+      const repo = await createRepo(rootDir);
+      // Three entries alone cross the byte bound. Many more small entries
+      // follow, so the FULL response also carries more than the entry-count
+      // bound. A parser that fully builds the list before checking either
+      // bound (post-parse) would report the entry-count breach, because it
+      // checks that bound first against the whole materialized list. A
+      // parser that checks both bounds while the list accumulates rejects on
+      // the byte bound instead, the moment the third entry crosses it, well
+      // before the count bound is ever reached.
+      const oversizedEntry = "a".repeat(Math.ceil(REFERENCED_SOURCE_IGNORE_MAX_TOTAL_BYTES / 2) + 1);
+      const bigEntries = Array.from({ length: 3 }, (_, index) => `!! ${oversizedEntry}-${index}`);
+      const trailingEntries = Array.from(
+        { length: REFERENCED_SOURCE_IGNORE_MAX_ENTRY_COUNT + 10 },
+        (_, index) => `!! trailing-${index}`,
+      );
+      const syntheticIgnored = `${[...bigEntries, ...trailingEntries].join("\0")}\0`;
+      setExpensiveWorkspaceGitExecutor(async (input) => {
+        if (input.operation === "referenced_source.ignored_files") {
+          return { stdout: syntheticIgnored, stderr: "" };
+        }
+        return await runLocalGit(input.localDir, [...input.args], {
+          timeout: input.timeout,
+          maxBuffer: input.maxBuffer,
+          env: input.env,
+        });
+      });
+
+      await expect(readReferencedSourceGitIgnoredPaths(repo)).rejects.toThrow(/UTF-8 bytes/);
+    });
+
+    it("bounds the raw command-output allowance to the ignore-scan limits, not the general-purpose full-tree ceiling", async () => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-referenced-raw-buffer-"));
+      cleanupDirs.push(rootDir);
+      const repo = await createRepo(rootDir);
+      let observedMaxBuffer: number | undefined;
+      setExpensiveWorkspaceGitExecutor(async (input) => {
+        if (input.operation === "referenced_source.ignored_files") {
+          observedMaxBuffer = input.maxBuffer;
+        }
+        return await runLocalGit(input.localDir, [...input.args], {
+          timeout: input.timeout,
+          maxBuffer: input.maxBuffer,
+          env: input.env,
+        });
+      });
+
+      await readReferencedSourceGitIgnoredPaths(repo);
+
+      // Enough headroom for a scan within bounds to complete, but a small
+      // multiple of the byte bound — not the far larger allowance the
+      // anchor workspace's general-purpose full-tree reads use.
+      expect(observedMaxBuffer).toBeGreaterThan(REFERENCED_SOURCE_IGNORE_MAX_TOTAL_BYTES);
+      expect(observedMaxBuffer).toBeLessThan(16 * 1024 * 1024);
+    });
+
     it("routes both scan commands through the registered scheduler instead of spawning git directly", async () => {
       const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-referenced-scheduler-"));
       cleanupDirs.push(rootDir);
