@@ -390,7 +390,8 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
 
       try {
         await sourceSql.unsafe(`
-          CREATE TABLE "public"."routines" (
+          CREATE SCHEMA "paperclip_safeguards";
+          CREATE TABLE "paperclip_safeguards"."routines" (
             "id" uuid PRIMARY KEY,
             "company_id" uuid NOT NULL,
             "title" text NOT NULL,
@@ -398,24 +399,24 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
             "status" text NOT NULL,
             "schedule" jsonb NOT NULL
           );
-          CREATE TABLE "public"."routine_revisions" (
+          CREATE TABLE "paperclip_safeguards"."routine_revisions" (
             "id" uuid PRIMARY KEY,
             "company_id" uuid NOT NULL,
-            "routine_id" uuid NOT NULL REFERENCES "public"."routines"("id") ON DELETE CASCADE,
+            "routine_id" uuid NOT NULL REFERENCES "paperclip_safeguards"."routines"("id") ON DELETE CASCADE,
             "revision_number" integer NOT NULL,
             "title" text NOT NULL,
             "description" text NOT NULL,
             "snapshot" jsonb NOT NULL
           );
-          CREATE TABLE "public"."routine_runs" (
+          CREATE TABLE "paperclip_safeguards"."routine_runs" (
             "id" uuid PRIMARY KEY,
-            "routine_id" uuid NOT NULL REFERENCES "public"."routines"("id") ON DELETE CASCADE,
+            "routine_id" uuid NOT NULL REFERENCES "paperclip_safeguards"."routines"("id") ON DELETE CASCADE,
             "company_id" uuid NOT NULL,
             "status" text NOT NULL,
             "issue_id" uuid,
             "created_at" timestamptz NOT NULL
           );
-          CREATE TABLE "public"."company_skills" (
+          CREATE TABLE "paperclip_safeguards"."company_skills" (
             "id" uuid PRIMARY KEY,
             "company_id" uuid NOT NULL,
             "key" text NOT NULL,
@@ -423,14 +424,14 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
             "markdown" text NOT NULL,
             "current_version_id" uuid
           );
-          CREATE TABLE "public"."company_skill_versions" (
+          CREATE TABLE "paperclip_safeguards"."company_skill_versions" (
             "id" uuid PRIMARY KEY,
             "company_id" uuid NOT NULL,
-            "company_skill_id" uuid NOT NULL REFERENCES "public"."company_skills"("id") ON DELETE CASCADE,
+            "company_skill_id" uuid NOT NULL REFERENCES "paperclip_safeguards"."company_skills"("id") ON DELETE CASCADE,
             "revision_number" integer NOT NULL,
             "file_inventory" jsonb NOT NULL
           );
-          CREATE TABLE "public"."agent_task_sessions" (
+          CREATE TABLE "paperclip_safeguards"."agent_task_sessions" (
             "id" uuid PRIMARY KEY,
             "company_id" uuid NOT NULL,
             "agent_id" uuid NOT NULL,
@@ -442,7 +443,7 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
             CONSTRAINT "agent_task_sessions_company_agent_adapter_task_uniq"
               UNIQUE ("company_id", "agent_id", "adapter_type", "task_key")
           );
-          CREATE TABLE "public"."agent_config_revisions" (
+          CREATE TABLE "paperclip_safeguards"."agent_config_revisions" (
             "id" uuid PRIMARY KEY,
             "company_id" uuid NOT NULL,
             "agent_id" uuid NOT NULL,
@@ -452,7 +453,7 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
             "after_config" jsonb NOT NULL,
             "created_at" timestamptz NOT NULL
           );
-          CREATE TABLE "public"."issues" (
+          CREATE TABLE "paperclip_safeguards"."issues" (
             "id" uuid PRIMARY KEY,
             "company_id" uuid NOT NULL,
             "slug" text NOT NULL,
@@ -460,11 +461,11 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
             "status" text NOT NULL,
             "unblock_descriptor" jsonb
           );
-          CREATE TABLE "public"."heartbeat_runs" (
+          CREATE TABLE "paperclip_safeguards"."heartbeat_runs" (
             "id" uuid PRIMARY KEY,
             "company_id" uuid NOT NULL,
             "agent_id" uuid NOT NULL,
-            "issue_id" uuid REFERENCES "public"."issues"("id") ON DELETE SET NULL,
+            "issue_id" uuid REFERENCES "paperclip_safeguards"."issues"("id") ON DELETE SET NULL,
             "status" text NOT NULL,
             "error_code" text,
             "context_snapshot" jsonb NOT NULL,
@@ -472,44 +473,44 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
             "last_output_at" timestamptz,
             "finished_at" timestamptz
           );
-          CREATE TABLE "public"."agent_wakeup_requests" (
+          CREATE TABLE "paperclip_safeguards"."agent_wakeup_requests" (
             "id" uuid PRIMARY KEY,
             "company_id" uuid NOT NULL,
             "agent_id" uuid NOT NULL,
-            "issue_id" uuid REFERENCES "public"."issues"("id") ON DELETE CASCADE,
+            "issue_id" uuid REFERENCES "paperclip_safeguards"."issues"("id") ON DELETE CASCADE,
             "status" text NOT NULL,
             "reason" text NOT NULL,
             "context" jsonb NOT NULL
           );
-          CREATE TABLE "public"."issue_recovery_actions" (
+          CREATE TABLE "paperclip_safeguards"."issue_recovery_actions" (
             "id" uuid PRIMARY KEY,
             "company_id" uuid NOT NULL,
-            "issue_id" uuid NOT NULL REFERENCES "public"."issues"("id") ON DELETE CASCADE,
+            "issue_id" uuid NOT NULL REFERENCES "paperclip_safeguards"."issues"("id") ON DELETE CASCADE,
             "status" text NOT NULL,
             "reason" text NOT NULL,
             "details" jsonb NOT NULL
           );
-          CREATE TABLE "public"."documents" (
+          CREATE TABLE "paperclip_safeguards"."documents" (
             "id" uuid PRIMARY KEY,
             "company_id" uuid NOT NULL,
             "title" text NOT NULL,
             "latest_body" text NOT NULL
           );
-          CREATE TABLE "public"."issue_documents" (
-            "issue_id" uuid NOT NULL REFERENCES "public"."issues"("id") ON DELETE CASCADE,
-            "document_id" uuid NOT NULL REFERENCES "public"."documents"("id") ON DELETE CASCADE,
+          CREATE TABLE "paperclip_safeguards"."issue_documents" (
+            "issue_id" uuid NOT NULL REFERENCES "paperclip_safeguards"."issues"("id") ON DELETE CASCADE,
+            "document_id" uuid NOT NULL REFERENCES "paperclip_safeguards"."documents"("id") ON DELETE CASCADE,
             "company_id" uuid NOT NULL,
             "key" text NOT NULL,
             PRIMARY KEY ("issue_id", "document_id")
           );
-          CREATE TABLE "public"."issue_work_products" (
+          CREATE TABLE "paperclip_safeguards"."issue_work_products" (
             "id" uuid PRIMARY KEY,
             "company_id" uuid NOT NULL,
-            "issue_id" uuid NOT NULL REFERENCES "public"."issues"("id") ON DELETE CASCADE,
+            "issue_id" uuid NOT NULL REFERENCES "paperclip_safeguards"."issues"("id") ON DELETE CASCADE,
             "kind" text NOT NULL,
             "metadata" jsonb NOT NULL
           );
-          CREATE TABLE "public"."assets" (
+          CREATE TABLE "paperclip_safeguards"."assets" (
             "id" uuid PRIMARY KEY,
             "company_id" uuid NOT NULL,
             "provider" text NOT NULL,
@@ -520,15 +521,15 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
             "original_filename" text,
             "created_by_agent_id" uuid
           );
-          CREATE TABLE "public"."issue_attachments" (
+          CREATE TABLE "paperclip_safeguards"."issue_attachments" (
             "id" uuid PRIMARY KEY,
             "company_id" uuid NOT NULL,
-            "issue_id" uuid NOT NULL REFERENCES "public"."issues"("id") ON DELETE CASCADE,
-            "asset_id" uuid NOT NULL REFERENCES "public"."assets"("id") ON DELETE CASCADE
+            "issue_id" uuid NOT NULL REFERENCES "paperclip_safeguards"."issues"("id") ON DELETE CASCADE,
+            "asset_id" uuid NOT NULL REFERENCES "paperclip_safeguards"."assets"("id") ON DELETE CASCADE
           );
         `);
         await sourceSql.unsafe(`
-          INSERT INTO "public"."routines" ("id", "company_id", "title", "description", "status", "schedule")
+          INSERT INTO "paperclip_safeguards"."routines" ("id", "company_id", "title", "description", "status", "schedule")
           VALUES (
             '11111111-1111-4111-8111-111111111111',
             'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
@@ -537,7 +538,7 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
             'active',
             '{"cron":"0 8 * * *","timezone":"Asia/Male"}'
           );
-          INSERT INTO "public"."routine_revisions" (
+          INSERT INTO "paperclip_safeguards"."routine_revisions" (
             "id", "company_id", "routine_id", "revision_number", "title", "description", "snapshot"
           )
           VALUES (
@@ -549,7 +550,7 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
             'Preserve stable routine task sessions and inspect recovery evidence before terminalizing.',
             '{"taskKey":"routine:11111111-1111-4111-8111-111111111111","policy":"stable-session-history"}'
           );
-          INSERT INTO "public"."company_skills" (
+          INSERT INTO "paperclip_safeguards"."company_skills" (
             "id", "company_id", "key", "name", "markdown", "current_version_id"
           )
           VALUES (
@@ -560,7 +561,7 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
             'Uploaded PDFs are canonical local full-text inputs; invalid citations are quarantined; inaccessible lawful full text receives a named deferred blocker and the queue continues.',
             '15151515-1515-4515-8515-151515151515'
           );
-          INSERT INTO "public"."company_skill_versions" (
+          INSERT INTO "paperclip_safeguards"."company_skill_versions" (
             "id", "company_id", "company_skill_id", "revision_number", "file_inventory"
           )
           VALUES (
@@ -570,7 +571,7 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
             3,
             '{"files":[{"path":"SKILL.md","sha256":"skill-sha"}]}'
           );
-          INSERT INTO "public"."issues" ("id", "company_id", "slug", "title", "status", "unblock_descriptor")
+          INSERT INTO "paperclip_safeguards"."issues" ("id", "company_id", "slug", "title", "status", "unblock_descriptor")
           VALUES (
             '22222222-2222-4222-8222-222222222222',
             'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
@@ -579,7 +580,7 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
             'blocked',
             '{"type":"missing_live_path","owner":"board","action":"restore scheduled prompt/session handoff"}'
           );
-          INSERT INTO "public"."routine_runs" ("id", "routine_id", "company_id", "status", "issue_id", "created_at")
+          INSERT INTO "paperclip_safeguards"."routine_runs" ("id", "routine_id", "company_id", "status", "issue_id", "created_at")
           VALUES (
             '33333333-3333-4333-8333-333333333333',
             '11111111-1111-4111-8111-111111111111',
@@ -588,7 +589,7 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
             '22222222-2222-4222-8222-222222222222',
             '2026-08-26T04:10:00Z'
           );
-          INSERT INTO "public"."heartbeat_runs" (
+          INSERT INTO "paperclip_safeguards"."heartbeat_runs" (
             "id", "company_id", "agent_id", "issue_id", "status", "error_code",
             "context_snapshot", "result_json", "last_output_at", "finished_at"
           )
@@ -604,7 +605,7 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
             '2026-08-26T04:11:00Z',
             '2026-08-26T14:00:00Z'
           );
-          INSERT INTO "public"."agent_task_sessions" (
+          INSERT INTO "paperclip_safeguards"."agent_task_sessions" (
             "id", "company_id", "agent_id", "adapter_type", "task_key", "session_id", "last_run_id", "updated_at"
           )
           VALUES (
@@ -617,7 +618,7 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
             '44444444-4444-4444-8444-444444444444',
             '2026-08-26T14:00:00Z'
           );
-          INSERT INTO "public"."agent_config_revisions" (
+          INSERT INTO "paperclip_safeguards"."agent_config_revisions" (
             "id", "company_id", "agent_id", "source", "changed_keys", "before_config", "after_config", "created_at"
           )
           VALUES (
@@ -630,7 +631,7 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
             '{"adapterConfig":{"instructionsBundleMode":"managed","paperclipSkillSync":{"desiredSkills":["company/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/evidence-grounded-literature-review"]}}}',
             '2026-08-26T14:05:00Z'
           );
-          INSERT INTO "public"."agent_wakeup_requests" ("id", "company_id", "agent_id", "issue_id", "status", "reason", "context")
+          INSERT INTO "paperclip_safeguards"."agent_wakeup_requests" ("id", "company_id", "agent_id", "issue_id", "status", "reason", "context")
           VALUES (
             '66666666-6666-4666-8666-666666666666',
             'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
@@ -640,7 +641,7 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
             'routine_schedule',
             '{"taskKey":"routine:11111111-1111-4111-8111-111111111111"}'
           );
-          INSERT INTO "public"."issue_recovery_actions" ("id", "company_id", "issue_id", "status", "reason", "details")
+          INSERT INTO "paperclip_safeguards"."issue_recovery_actions" ("id", "company_id", "issue_id", "status", "reason", "details")
           VALUES (
             '77777777-7777-4777-8777-777777777777',
             'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
@@ -649,21 +650,21 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
             'missing_disposition',
             '{"sourceState":{"documentCount":1,"attachmentCount":1},"unblockDescriptorRequired":true}'
           );
-          INSERT INTO "public"."documents" ("id", "company_id", "title", "latest_body")
+          INSERT INTO "paperclip_safeguards"."documents" ("id", "company_id", "title", "latest_body")
           VALUES (
             '88888888-8888-4888-8888-888888888888',
             'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
             'Evidence rows',
             'E01,E02,E03'
           );
-          INSERT INTO "public"."issue_documents" ("issue_id", "document_id", "company_id", "key")
+          INSERT INTO "paperclip_safeguards"."issue_documents" ("issue_id", "document_id", "company_id", "key")
           VALUES (
             '22222222-2222-4222-8222-222222222222',
             '88888888-8888-4888-8888-888888888888',
             'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
             'evidence'
           );
-          INSERT INTO "public"."issue_work_products" ("id", "company_id", "issue_id", "kind", "metadata")
+          INSERT INTO "paperclip_safeguards"."issue_work_products" ("id", "company_id", "issue_id", "kind", "metadata")
           VALUES (
             '99999999-9999-4999-8999-999999999999',
             'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
@@ -671,7 +672,7 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
             'csv_results',
             '{"rows":3}'
           );
-          INSERT INTO "public"."assets" (
+          INSERT INTO "paperclip_safeguards"."assets" (
             "id", "company_id", "provider", "object_key", "content_type", "byte_size", "sha256",
             "original_filename", "created_by_agent_id"
           )
@@ -686,7 +687,7 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
             'evidence.pdf',
             'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
           );
-          INSERT INTO "public"."issue_attachments" ("id", "company_id", "issue_id", "asset_id")
+          INSERT INTO "paperclip_safeguards"."issue_attachments" ("id", "company_id", "issue_id", "asset_id")
           VALUES (
             '13131313-1313-4313-8313-131313131313',
             'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
@@ -742,34 +743,34 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
             d."latest_body" AS "document_body",
             (iwp."metadata" ->> 'rows')::int AS "work_product_rows",
             a."object_key" AS "attachment_object_key"
-          FROM "public"."routines" r
-          JOIN "public"."agent_task_sessions" s
+          FROM "paperclip_safeguards"."routines" r
+          JOIN "paperclip_safeguards"."agent_task_sessions" s
             ON s."task_key" = 'routine:' || r."id"::text
-          JOIN "public"."heartbeat_runs" hr
+          JOIN "paperclip_safeguards"."heartbeat_runs" hr
             ON hr."id" = s."last_run_id"
-          JOIN "public"."issues" i
+          JOIN "paperclip_safeguards"."issues" i
             ON i."id" = hr."issue_id"
-          JOIN "public"."agent_wakeup_requests" awr
+          JOIN "paperclip_safeguards"."agent_wakeup_requests" awr
             ON awr."issue_id" = i."id"
-          JOIN "public"."routine_revisions" rr
+          JOIN "paperclip_safeguards"."routine_revisions" rr
             ON rr."routine_id" = r."id"
-          JOIN "public"."company_skills" cs
+          JOIN "paperclip_safeguards"."company_skills" cs
             ON cs."company_id" = r."company_id"
-          JOIN "public"."company_skill_versions" csv
+          JOIN "paperclip_safeguards"."company_skill_versions" csv
             ON csv."id" = cs."current_version_id"
-          JOIN "public"."agent_config_revisions" acr
+          JOIN "paperclip_safeguards"."agent_config_revisions" acr
             ON acr."agent_id" = s."agent_id"
-          JOIN "public"."issue_recovery_actions" ira
+          JOIN "paperclip_safeguards"."issue_recovery_actions" ira
             ON ira."issue_id" = i."id"
-          JOIN "public"."issue_documents" idoc
+          JOIN "paperclip_safeguards"."issue_documents" idoc
             ON idoc."issue_id" = i."id"
-          JOIN "public"."documents" d
+          JOIN "paperclip_safeguards"."documents" d
             ON d."id" = idoc."document_id"
-          JOIN "public"."issue_work_products" iwp
+          JOIN "paperclip_safeguards"."issue_work_products" iwp
             ON iwp."issue_id" = i."id"
-          JOIN "public"."issue_attachments" ia
+          JOIN "paperclip_safeguards"."issue_attachments" ia
             ON ia."issue_id" = i."id"
-          JOIN "public"."assets" a
+          JOIN "paperclip_safeguards"."assets" a
             ON a."id" = ia."asset_id"
         `);
 
