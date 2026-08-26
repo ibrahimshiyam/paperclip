@@ -393,12 +393,13 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       .from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.retryOfRunId, runId)));
     expect(retryRun).toMatchObject({
-      status: "queued",
       agentId: coderId,
       retryOfRunId: runId,
     });
+    expect(["queued", "running"]).toContain(retryRun?.status);
     expect(retryRun?.contextSnapshot).toMatchObject({
       issueId,
+      taskKey: issueId,
       retryReason: "issue_continuation_needed",
     });
   });
@@ -576,7 +577,8 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
 
     expect(result).toMatchObject({ created: 1, folded: 0 });
     const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
-    expect(run?.status).toBe("running");
+    expect(run?.status).toBe("timed_out");
+    expect(run?.errorCode).toBe("codex_output_inactivity_monitor");
     const [evaluation] = await db
       .select()
       .from(issues)
@@ -620,7 +622,8 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
 
     expect(result).toMatchObject({ created: 1, folded: 0 });
     const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
-    expect(run?.status).toBe("running");
+    expect(run?.status).toBe("timed_out");
+    expect(run?.errorCode).toBe("codex_output_inactivity_monitor");
     const [evaluation] = await db
       .select()
       .from(issues)

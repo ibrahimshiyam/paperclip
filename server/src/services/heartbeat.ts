@@ -17896,6 +17896,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const recoveryContextSnapshot = withRecoveryModelProfileHint({
         issueId: issue.id,
         taskId: issue.id,
+        taskKey: issue.id,
         wakeReason: recoveryReason,
         retryReason,
         source: recoverySource,
@@ -17932,6 +17933,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           reason: recoveryReason,
           payload: withRecoveryModelProfileHint({
             issueId: issue.id,
+            taskKey: issue.id,
             retryOfRunId: run.id,
           }, "normal_model"),
           status: "queued",
