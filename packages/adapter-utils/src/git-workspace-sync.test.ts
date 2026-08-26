@@ -14,7 +14,10 @@ import {
   integrateImportedGitHead,
   isMissingGitPrerequisiteError,
   readGitWorkspaceSnapshot,
+  ReferencedSourceIgnoreScanLimitExceededError,
   readReferencedSourceGitIgnoredPaths,
+  REFERENCED_SOURCE_IGNORE_MAX_ENTRY_COUNT,
+  REFERENCED_SOURCE_IGNORE_MAX_TOTAL_BYTES,
   runLocalGit,
   sanitizeGitRemoteUrl,
   setExpensiveWorkspaceGitExecutor,
@@ -62,6 +65,44 @@ describe("git workspace sync", () => {
       "adapter_sync.overlay_diff",
       "adapter_sync.untracked_files",
     ]);
+  });
+
+  it("keeps every filename byte for a padded name in each of the four anchor lanes", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-anchor-whitespace-"));
+    cleanupDirs.push(rootDir);
+    const repo = await createRepo(rootDir);
+
+    // Deleted lane: commit the file first (in isolation, before anything else
+    // is staged), then remove it from the work tree.
+    const deletedName = " deleted padded ";
+    await writeFile(path.join(repo, deletedName), "deleted\n", "utf8");
+    await git(repo, ["add", deletedName]);
+    await git(repo, ["commit", "-qm", "add deleted padded"]);
+    await rm(path.join(repo, deletedName));
+
+    // Overlay lane, staged-new half: `git diff --diff-filter=ACMRTUXB HEAD`
+    // reports a staged-but-uncommitted file as added.
+    const overlayName = " overlay padded ";
+    await writeFile(path.join(repo, overlayName), "overlay\n", "utf8");
+    await git(repo, ["add", overlayName]);
+
+    // Overlay lane, untracked half: `ls-files --others --exclude-standard`.
+    const untrackedName = " untracked padded ";
+    await writeFile(path.join(repo, untrackedName), "untracked\n", "utf8");
+
+    // Ignored lane: a double-wildcard pattern avoids the separate rule that
+    // Git trims an unescaped trailing space in a .gitignore PATTERN itself;
+    // the padding under test lives in the matched FILE name.
+    const ignoredName = " ignored padded ";
+    await writeFile(path.join(repo, ".gitignore"), "*ignored*padded*\n", "utf8");
+    await writeFile(path.join(repo, ignoredName), "ignored\n", "utf8");
+
+    const snapshot = await readGitWorkspaceSnapshot(repo);
+
+    expect(snapshot?.overlayPaths).toContain(overlayName);
+    expect(snapshot?.overlayPaths).toContain(untrackedName);
+    expect(snapshot?.deletedPaths).toContain(deletedName);
+    expect(snapshot?.ignoredPaths).toContain(ignoredName);
   });
 
   async function createRepo(rootDir: string): Promise<string> {
@@ -574,6 +615,55 @@ describe("git workspace sync", () => {
 
       const scan = await readReferencedSourceGitIgnoredPaths(repo);
       expect(scan?.ignoredPaths).toEqual([paddedName]);
+    });
+
+    it("fails closed when the parsed ignored-entry count exceeds the bound", async () => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-referenced-bound-count-"));
+      cleanupDirs.push(rootDir);
+      const repo = await createRepo(rootDir);
+      // Synthesize the `git status --ignored -z` output directly, rather than
+      // creating ten thousand real files, by intercepting the scan at the
+      // executor seam. The parser must reject this before it sorts or
+      // re-relativizes the list.
+      const overLimitCount = REFERENCED_SOURCE_IGNORE_MAX_ENTRY_COUNT + 1;
+      const syntheticIgnored = `${Array.from({ length: overLimitCount }, (_, index) => `!! entry-${index}`).join("\0")}\0`;
+      setExpensiveWorkspaceGitExecutor(async (input) => {
+        if (input.operation === "referenced_source.ignored_files") {
+          return { stdout: syntheticIgnored, stderr: "" };
+        }
+        return await runLocalGit(input.localDir, [...input.args], {
+          timeout: input.timeout,
+          maxBuffer: input.maxBuffer,
+          env: input.env,
+        });
+      });
+
+      await expect(readReferencedSourceGitIgnoredPaths(repo)).rejects.toBeInstanceOf(
+        ReferencedSourceIgnoreScanLimitExceededError,
+      );
+    });
+
+    it("fails closed when the summed UTF-8 byte size of ignored paths exceeds the bound", async () => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-referenced-bound-bytes-"));
+      cleanupDirs.push(rootDir);
+      const repo = await createRepo(rootDir);
+      // One entry alone exceeds the byte bound, well under the entry-count bound.
+      const hugeEntry = "a".repeat(REFERENCED_SOURCE_IGNORE_MAX_TOTAL_BYTES + 1);
+      const syntheticIgnored = `!! ${hugeEntry}\0`;
+      setExpensiveWorkspaceGitExecutor(async (input) => {
+        if (input.operation === "referenced_source.ignored_files") {
+          return { stdout: syntheticIgnored, stderr: "" };
+        }
+        return await runLocalGit(input.localDir, [...input.args], {
+          timeout: input.timeout,
+          maxBuffer: input.maxBuffer,
+          env: input.env,
+        });
+      });
+
+      await expect(readReferencedSourceGitIgnoredPaths(repo)).rejects.toBeInstanceOf(
+        ReferencedSourceIgnoreScanLimitExceededError,
+      );
     });
 
     it("routes both scan commands through the registered scheduler instead of spawning git directly", async () => {

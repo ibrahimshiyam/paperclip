@@ -41,6 +41,19 @@ export type ExpensiveWorkspaceGitExecutor = (
 let expensiveWorkspaceGitExecutor: ExpensiveWorkspaceGitExecutor | null = null;
 
 /**
+ * The workspace Git scan scheduler's typed code for a saturated queue
+ * (`server/src/services/workspace-git-operation-scheduler.ts`,
+ * `WORKSPACE_GIT_SCAN_ERROR_CODES.saturated`). Declared again here because
+ * `adapter-utils` cannot import from `server` (the reverse direction is
+ * allowed, not this one); `server` carries a test that asserts the two
+ * literals stay equal. `resolveReferencedSourceIgnore` in
+ * `sandbox-managed-runtime.ts` reads this code off a caught error's `code`
+ * property, never off its message text, to retry only a saturated queue and
+ * fail closed on every other Git scan error.
+ */
+export const WORKSPACE_GIT_SCAN_SATURATED_CODE = "workspace_git_scan_saturated";
+
+/**
  * Lets a host process apply its process-wide admission policy to the adapter
  * package's full-tree Git walks. Standalone adapter-utils consumers retain the
  * existing timeout/buffer-bounded fallback.
@@ -161,7 +174,16 @@ export async function readGitWorkspaceSnapshot(localDir: string): Promise<GitWor
     ]);
 
     const branchName = branchResult.stdout.trim();
-    const splitNul = (value: string) => value.split("\0").map((entry) => entry.trim()).filter(Boolean);
+    // `-z` already delimits each record with a NUL byte, so a leading or
+    // trailing space in a record is part of the path itself, not padding to
+    // remove — trimming it would resolve to a path that does not exist. A
+    // length check finds the one genuinely empty record `-z` appends after
+    // the last NUL, without eating a real path's own leading or trailing
+    // whitespace. This applies to all four NUL-delimited outputs below (the
+    // overlay diff, the untracked list, the deleted list, and the ignored
+    // list); `branchName` and `headCommit` come from non-`-z` commands and
+    // keep their own `.trim()` above and below, which is safe.
+    const splitNul = (value: string) => value.split("\0").filter((entry) => entry.length > 0);
     return {
       headCommit: headCommitResult.stdout.trim(),
       branchName: branchName && branchName !== "HEAD" ? branchName : null,
@@ -261,6 +283,27 @@ function isNotAGitRepositoryError(error: unknown): boolean {
   return /not a git repository/i.test(stderr) || /not a git repository/i.test(message);
 }
 
+/** Bound on the number of parsed ignored entries `readReferencedSourceGitIgnoredPaths` accepts before it fails closed. */
+export const REFERENCED_SOURCE_IGNORE_MAX_ENTRY_COUNT = 10_000;
+
+/** Bound on the summed UTF-8 byte length of the resolved ignored-path strings `readReferencedSourceGitIgnoredPaths` accepts before it fails closed. */
+export const REFERENCED_SOURCE_IGNORE_MAX_TOTAL_BYTES = 2 * 1024 * 1024;
+
+/**
+ * Thrown by {@link readReferencedSourceGitIgnoredPaths} when the parsed
+ * ignored-path list breaches {@link REFERENCED_SOURCE_IGNORE_MAX_ENTRY_COUNT}
+ * or {@link REFERENCED_SOURCE_IGNORE_MAX_TOTAL_BYTES}, so the caller can
+ * classify the failure as a bound breach instead of a plain Git read error.
+ * The message never leaves this package: `resolveReferencedSourceIgnore`
+ * replaces it with a fixed category before the failure reaches any consumer.
+ */
+export class ReferencedSourceIgnoreScanLimitExceededError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ReferencedSourceIgnoreScanLimitExceededError";
+  }
+}
+
 /**
  * Read the Git-ignored paths of a referenced-project host directory, for the
  * staging path to exclude them (see `resolveReferencedSourceIgnore` in
@@ -270,8 +313,10 @@ function isNotAGitRepositoryError(error: unknown): boolean {
  *
  * Returns `null` when `localDir` is not a Git work tree — the caller keeps
  * today's fixed excludes for that case. Throws on any other Git error, a
- * timeout, or malformed output, so the caller can fail closed and skip
- * staging that one project instead of shipping it unfiltered.
+ * timeout, malformed output, or a bound breach (see
+ * {@link ReferencedSourceIgnoreScanLimitExceededError}), so the caller can
+ * fail closed and skip staging that one project instead of shipping it
+ * unfiltered.
  */
 export async function readReferencedSourceGitIgnoredPaths(
   localDir: string,
@@ -306,13 +351,33 @@ export async function readReferencedSourceGitIgnoredPaths(
   // itself, not padding to remove. A length check finds the one genuinely
   // empty entry `-z` appends after the last NUL, without eating a real path's
   // own leading or trailing whitespace.
-  const ignoredPaths = ignoredResult.stdout
+  const parsedIgnoredEntries = ignoredResult.stdout
     .split("\0")
     .filter((entry) => entry.length > 0)
     .filter((entry) => entry.startsWith("!! "))
     .map((entry) => entry.slice(3).replace(/\/+$/, ""))
-    .filter((entry) => entry.length > 0)
-    .sort((left, right) => left.localeCompare(right));
+    .filter((entry) => entry.length > 0);
+
+  // Enforce both bounds during parsing, before the list sorts and
+  // re-relativizes: a pathologically large ignore set (a huge repository, or
+  // one crafted to hold many ignored entries) must fail closed here rather
+  // than pay the cost of sorting and re-relativizing it first.
+  if (parsedIgnoredEntries.length > REFERENCED_SOURCE_IGNORE_MAX_ENTRY_COUNT) {
+    throw new ReferencedSourceIgnoreScanLimitExceededError(
+      `referenced project ignore scan found more than ${REFERENCED_SOURCE_IGNORE_MAX_ENTRY_COUNT} ignored entries`,
+    );
+  }
+  let totalIgnoredBytes = 0;
+  for (const entry of parsedIgnoredEntries) {
+    totalIgnoredBytes += Buffer.byteLength(entry, "utf8");
+    if (totalIgnoredBytes > REFERENCED_SOURCE_IGNORE_MAX_TOTAL_BYTES) {
+      throw new ReferencedSourceIgnoreScanLimitExceededError(
+        `referenced project ignore scan exceeded ${REFERENCED_SOURCE_IGNORE_MAX_TOTAL_BYTES} UTF-8 bytes of ignored paths`,
+      );
+    }
+  }
+
+  const ignoredPaths = parsedIgnoredEntries.sort((left, right) => left.localeCompare(right));
 
   return { toplevel, ignoredPaths };
 }
