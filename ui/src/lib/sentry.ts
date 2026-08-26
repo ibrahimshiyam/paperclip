@@ -12,31 +12,15 @@
 // global handlers `Sentry.init` installed send no more events. Both are
 // built-in Sentry client calls — no custom filter code.
 //
-// State lives in one `current` session record, not in separate module
-// variables, so a sign-out that races a fast sign-back-in cannot mix up the
-// two sessions. `teardownBrowserErrorMonitoring` swaps `current` to `null`
-// before it awaits anything, so the next `initBrowserErrorMonitoring` call
-// starts its own session record right away. A bootstrap still in flight for
-// the old session checks, once the dynamic import resolves, whether it is
-// still `current`; a superseded bootstrap closes the client it just started
-// instead of publishing it, so it can never leak into the new session.
-//
-// A fast sign-back-in must also never start ahead of a still-running
-// teardown: `Sentry.init` and `Sentry.getCurrentScope().setClient` both act
-// on ONE shared scope, so if the new sign-in's `Sentry.init()` ran before the
-// old teardown's `close()`-then-`setClient(undefined)` finished, that stale
-// `setClient(undefined)` would detach the NEW client instead of the old one
-// — silently disabling monitoring for the session that just signed in.
-// `teardownInFlight` tracks the running teardown's promise, so
-// `initBrowserErrorMonitoring` can wait for it to finish in full before it
-// calls `Sentry.init()` for the new session. The two never interleave.
+// `initBrowserErrorMonitoring`, `teardownBrowserErrorMonitoring`, and
+// `captureBrowserException` each queue their work on one shared promise
+// chain (`enqueue`) instead of running at once. One operation runs at a
+// time, in call order, so no operation can ever observe another one
+// part-finished — a sign-out always closes the client a sign-in already
+// finished starting, never one still starting.
 //
 // `@sentry/browser` loads through a dynamic import, so Vite puts it in a
-// separate chunk that a browser with no DSN never fetches. `loadSentryModule`
-// caches that import's promise at module scope, so a sign-out followed at
-// once by a sign-back-in issues one dynamic import call, not two — two
-// concurrent calls for the same not-yet-loaded chunk is also the shape a
-// test needs a stand-in module to resolve deterministically.
+// separate chunk that a browser with no DSN never fetches.
 //
 // Default-integration privacy note: two default integrations copy values
 // this app does not want inside a Sentry event, so the initializer removes
@@ -50,143 +34,83 @@
 // (`GlobalHandlers`), the two React error boundaries, deduplicates a repeat
 // event (`Dedupe`), and links a caused-by chain (`LinkedErrors`).
 
-/** The subset of the `@sentry/browser` client surface this gate calls. */
-interface SentryHandle {
-  captureException(error: unknown): string;
+let queue: Promise<void> = Promise.resolve();
+
+/** Run gate operations one at a time, in call order. */
+function enqueue(op: () => Promise<void>): Promise<void> {
+  const next = queue.then(op, op);
+  queue = next.catch(() => {});
+  return next;
 }
-
-/** The subset of the `@sentry/browser` module surface teardown calls. */
-interface SentryModuleHandle {
-  close(timeout?: number): Promise<boolean>;
-  getCurrentScope(): { setClient(client: undefined): void };
-}
-
-/** One sign-in's worth of browser Sentry state. */
-interface SentrySession {
-  ready: Promise<void>;
-  handle: SentryHandle | null;
-  sentryModule: SentryModuleHandle | null;
-}
-
-let current: SentrySession | null = null;
-
-/**
- * The running teardown's promise, or `null` when no teardown is in flight.
- * `initBrowserErrorMonitoring` awaits this before it starts a new client, so
- * a sign-back-in never runs `Sentry.init()` ahead of a still-running
- * teardown's close-and-detach.
- */
-let teardownInFlight: Promise<void> | null = null;
 
 /** The `@sentry/browser` module shape, resolved once. */
 type SentryBrowserModule = typeof import("@sentry/browser");
 
-let sentryModuleImport: Promise<SentryBrowserModule> | null = null;
-
-/**
- * Load `@sentry/browser`, caching the dynamic import's promise so a second
- * call — even one issued before the first import settles — reuses it
- * instead of starting a second fetch of the same chunk. Clears the cache on
- * a rejected import, so a later sign-in retries the fetch instead of
- * repeating a stale network failure for the rest of the browser tab's life.
- */
-function loadSentryModule(): Promise<SentryBrowserModule> {
-  if (!sentryModuleImport) {
-    sentryModuleImport = import("@sentry/browser").catch((err: unknown) => {
-      sentryModuleImport = null;
-      throw err;
-    });
-  }
-  return sentryModuleImport;
-}
+let sentry: SentryBrowserModule | null = null;
 
 /**
  * Load `@sentry/browser` and start the client with the given DSN. Idempotent
- * — the session query can refetch and call this again, and a second call
- * returns the first call's promise instead of starting a second client.
- *
- * Waits for any in-flight teardown to finish before it calls
- * `bootstrapBrowserSentry`, so this session's `Sentry.init()` never races
- * that teardown's close-and-detach — see the module comment.
+ * — the session query can refetch and call this again, and a second call is
+ * a no-op because a client is already started.
  */
 export function initBrowserErrorMonitoring(dsn: string): Promise<void> {
-  if (current) return current.ready;
-  const session: SentrySession = { ready: Promise.resolve(), handle: null, sentryModule: null };
-  const afterTeardown = teardownInFlight ?? Promise.resolve();
-  session.ready = afterTeardown.then(() => bootstrapBrowserSentry(dsn, session));
-  current = session;
-  return session.ready;
+  return enqueue(async () => {
+    if (sentry) return;
+    try {
+      const Sentry = await import("@sentry/browser");
+      Sentry.init(buildBrowserSentryInitOptions(dsn));
+      sentry = Sentry;
+    } catch (err) {
+      // The dynamic import or the init call failed. Fall through with a
+      // single diagnostic. The gate fails open — the app keeps running
+      // without error monitoring rather than crashing on an opt-in feature.
+      // eslint-disable-next-line no-console
+      console.error("[paperclip] Sentry browser bootstrap failed", err);
+    }
+  });
 }
 
 /**
  * Stop browser error monitoring and forget the started client. Call this on
  * sign-out, so the browser sends Sentry no more events and no more
- * breadcrumbs after the session ends.
- *
- * A no-op when monitoring never started. Detaches `current` from the module
- * before it awaits anything, so a sign-back-in that races this call starts
- * its own session record right away instead of reusing this one's promise.
- * See `bootstrapBrowserSentry` for the other half of that guard: a bootstrap
- * still in flight for the session torn down here closes the client it just
- * started rather than publish it once it notices it is no longer `current`.
- *
- * Publishes its own promise onto `teardownInFlight` before it awaits
- * anything, so a sign-back-in issued in the same tick already sees it and
- * waits its turn — see `initBrowserErrorMonitoring`.
+ * breadcrumbs after the session ends. A no-op when monitoring never started.
  */
-export async function teardownBrowserErrorMonitoring(): Promise<void> {
-  const session = current;
-  current = null;
-  if (!session) return;
-  const work = closeSession(session);
-  teardownInFlight = work;
-  try {
-    await work;
-  } finally {
-    if (teardownInFlight === work) teardownInFlight = null;
-  }
-}
-
-async function closeSession(session: SentrySession): Promise<void> {
-  await session.ready;
-  if (!session.sentryModule) return;
-  try {
-    await session.sentryModule.close(2_000);
-    session.sentryModule.getCurrentScope().setClient(undefined);
-  } catch (err) {
-    // eslint-disable-next-line no-console
-    console.error("[paperclip] Sentry teardownBrowserErrorMonitoring failed", err);
-  }
+export function teardownBrowserErrorMonitoring(): Promise<void> {
+  return enqueue(async () => {
+    const Sentry = sentry;
+    sentry = null;
+    if (!Sentry) return;
+    try {
+      // Awaiting matters: the client flushes buffered events to Sentry
+      // during close; detaching before it settles silently drops them.
+      await Sentry.close(2_000);
+      Sentry.getCurrentScope().setClient(undefined);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[paperclip] Sentry teardownBrowserErrorMonitoring failed", err);
+    }
+  });
 }
 
 /**
- * Report an error to Sentry. Waits for `initBrowserErrorMonitoring` to
- * settle, so a call that races the dynamic import still reaches the client.
- * A no-op before the gate opens, when the gate never opens (no DSN on the
- * session), when bootstrap failed, or when a teardown superseded the session
- * this call started against. Never throws — observability must not change
- * control flow.
+ * Report an error to Sentry. Never throws — observability must not change
+ * control flow. A no-op before the gate opens, when the gate never opens (no
+ * DSN on the session), or when bootstrap failed.
  */
 export function captureBrowserException(error: unknown): void {
-  void reportWhenReady(error);
-}
-
-async function reportWhenReady(error: unknown): Promise<void> {
-  const session = current;
-  if (!session) return;
-  await session.ready;
-  if (current !== session || !session.handle) return;
-  try {
-    session.handle.captureException(error);
-  } catch (err) {
-    // eslint-disable-next-line no-console
-    console.error("[paperclip] Sentry captureBrowserException failed", err);
-  }
+  void enqueue(async () => {
+    try {
+      sentry?.captureException(error);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[paperclip] Sentry captureBrowserException failed", err);
+    }
+  });
 }
 
 /**
  * Build the `Sentry.init` options object. A pure function, split out from
- * `bootstrapBrowserSentry` so a test can call it with the real
+ * `initBrowserErrorMonitoring` so a test can call it with the real
  * `@sentry/browser` module and assert the resolved integration list and the
  * captured-event shape against the true SDK, not a stand-in.
  */
@@ -200,28 +124,4 @@ export function buildBrowserSentryInitOptions(dsn: string): Record<string, unkno
         (integration) => integration.name !== "HttpContext" && integration.name !== "Breadcrumbs",
       ),
   };
-}
-
-async function bootstrapBrowserSentry(dsn: string, session: SentrySession): Promise<void> {
-  try {
-    const Sentry = await loadSentryModule();
-    Sentry.init(buildBrowserSentryInitOptions(dsn));
-    if (current !== session) {
-      // A teardown (and maybe a new sign-in after it) ran while the dynamic
-      // import was in flight. This client belongs to no session anymore —
-      // close it now instead of publishing it onto `session`, so it cannot
-      // outlive the sign-out that should have stopped it.
-      await Sentry.close(2_000).catch(() => {});
-      Sentry.getCurrentScope().setClient(undefined);
-      return;
-    }
-    session.handle = { captureException: (error) => Sentry.captureException(error) };
-    session.sentryModule = Sentry;
-  } catch (err) {
-    // The dynamic import or the init call failed. Fall through with a
-    // single diagnostic. The gate fails open — the app keeps running
-    // without error monitoring rather than crashing on an opt-in feature.
-    // eslint-disable-next-line no-console
-    console.error("[paperclip] Sentry browser bootstrap failed", err);
-  }
 }
