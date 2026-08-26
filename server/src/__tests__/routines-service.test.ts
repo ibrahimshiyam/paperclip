@@ -1232,12 +1232,38 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
           source: "assignment",
           triggerDetail: "system",
           reason: "issue_assigned",
-          payload: { issueId: run.linkedIssueId, mutation: "create" },
+          payload: { issueId: run.linkedIssueId, mutation: "create", taskKey: `routine:${routine.id}` },
           requestedByActorType: undefined,
           requestedByActorId: null,
-          contextSnapshot: { issueId: run.linkedIssueId, source: "routine.dispatch" },
+          contextSnapshot: { issueId: run.linkedIssueId, source: "routine.dispatch", taskKey: `routine:${routine.id}` },
         },
       },
+    ]);
+  });
+
+  it("uses a stable routine task key so scheduled executions reuse agent session history", async () => {
+    const { agentId, routine, svc, wakeups } = await seedFixture();
+
+    const run = await svc.runRoutine(routine.id, { source: "schedule" });
+
+    expect(run.status).toBe("issue_created");
+    expect(wakeups).toEqual([
+      expect.objectContaining({
+        agentId,
+        opts: expect.objectContaining({
+          payload: {
+            issueId: run.linkedIssueId,
+            mutation: "create",
+            taskKey: `routine:${routine.id}`,
+          },
+          requestedByActorType: "system",
+          contextSnapshot: {
+            issueId: run.linkedIssueId,
+            source: "routine.dispatch",
+            taskKey: `routine:${routine.id}`,
+          },
+        }),
+      }),
     ]);
   });
 

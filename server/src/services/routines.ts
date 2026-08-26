@@ -543,6 +543,10 @@ function routineUsesWorkspaceBranch(routine: typeof routines.$inferSelect) {
     || extractRoutineVariableNames([routine.title, routine.description]).includes(WORKSPACE_BRANCH_ROUTINE_VARIABLE);
 }
 
+function routineAgentTaskKey(routine: Pick<typeof routines.$inferSelect, "id">) {
+  return `routine:${routine.id}`;
+}
+
 function routineRevisionSnapshotRoutine(routine: RoutineRow): RoutineRevisionSnapshotV1["routine"] {
   return {
     id: routine.id,
@@ -1949,6 +1953,7 @@ export function routineService(
           mutation: "create",
           contextSource: "routine.dispatch",
           requestedByActorType: input.source === "schedule" ? "system" : undefined,
+          taskKey: routineAgentTaskKey(input.routine),
           rethrowOnError: true,
         });
         const updated = await finalizeRun(createdRun.id, {

@@ -36,6 +36,7 @@ import {
   agentWakeupRequests,
   activityLog,
   approvals,
+  assets,
   companyMemberships,
   companySkillTestRuns,
   companySkillVersions,
@@ -51,6 +52,7 @@ import {
   heartbeatRunEvents,
   heartbeatRuns,
   issueApprovals,
+  issueAttachments,
   issueComments,
   issuePlanDecompositions,
   issueRecoveryActions,
@@ -13296,6 +13298,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         )
       : [{ count: 0, latestAt: null }];
 
+    const [attachmentStats] = contextIssueId
+      ? await db
+        .select({
+          count: sql<number>`count(*)::int`,
+          latestAt: sql<Date | null>`max(${issueAttachments.createdAt})`,
+        })
+        .from(issueAttachments)
+        .innerJoin(assets, and(
+          eq(issueAttachments.assetId, assets.id),
+          eq(assets.companyId, issueAttachments.companyId),
+        ))
+        .where(
+          and(
+            eq(issueAttachments.companyId, run.companyId),
+            eq(issueAttachments.issueId, contextIssueId),
+            eq(assets.createdByAgentId, run.agentId),
+            run.startedAt ? gte(issueAttachments.createdAt, run.startedAt) : sql`true`,
+            run.finishedAt ? lte(issueAttachments.createdAt, run.finishedAt) : sql`true`,
+          ),
+        )
+      : [{ count: 0, latestAt: null }];
+
     const [workspaceOperationStats] = await db
       .select({
         count: sql<number>`count(*)::int`,
@@ -13342,6 +13366,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         documentRevisionsCreated: countValue(documentStats?.count),
         planDocumentRevisionsCreated: countValue(documentStats?.planCount),
         workProductsCreated: countValue(workProductStats?.count),
+        attachmentsCreated: countValue(attachmentStats?.count),
         workspaceOperationsCreated: countValue(workspaceOperationStats?.count),
         activityEventsCreated: countValue(activityStats?.count),
         toolOrActionEventsCreated: countValue(eventStats?.count),
@@ -13349,6 +13374,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           commentStats?.latestAt,
           documentStats?.latestAt,
           workProductStats?.latestAt,
+          attachmentStats?.latestAt,
           workspaceOperationStats?.latestAt,
           activityStats?.latestAt,
           eventStats?.latestAt,

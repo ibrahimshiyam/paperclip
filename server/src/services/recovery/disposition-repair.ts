@@ -2,10 +2,14 @@ import { createHash } from "node:crypto";
 import { and, eq, inArray, ne, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
+  assets,
   agentWakeupRequests,
   approvals,
+  documents,
   heartbeatRuns,
   issueApprovals,
+  issueAttachments,
+  issueDocuments,
   issueRelations,
   issueThreadInteractions,
   issueWorkProducts,
@@ -84,7 +88,7 @@ export async function collectDispositionRepairSourceState(
   },
 ): Promise<DispositionRepairSourceState> {
   const issue = input.issue;
-  const [blockers, children, interactions, linkedApprovals, workProducts, activeRuns, queuedWakes] =
+  const [blockers, children, interactions, linkedApprovals, workProducts, issueDocs, attachments, activeRuns, queuedWakes] =
     await Promise.all([
       db
         .select({ id: issues.id, status: issues.status, assigneeAgentId: issues.assigneeAgentId })
@@ -163,6 +167,46 @@ export async function collectDispositionRepairSourceState(
           ),
         ),
       db
+        .select({
+          id: documents.id,
+          key: issueDocuments.key,
+          title: documents.title,
+          latestRevisionId: documents.latestRevisionId,
+          latestRevisionNumber: documents.latestRevisionNumber,
+          updatedAt: documents.updatedAt,
+        })
+        .from(issueDocuments)
+        .innerJoin(
+          documents,
+          and(eq(documents.id, issueDocuments.documentId), eq(documents.companyId, issueDocuments.companyId)),
+        )
+        .where(
+          and(
+            eq(issueDocuments.companyId, issue.companyId),
+            eq(issueDocuments.issueId, issue.id),
+          ),
+        ),
+      db
+        .select({
+          id: issueAttachments.id,
+          assetId: issueAttachments.assetId,
+          contentType: assets.contentType,
+          originalFilename: assets.originalFilename,
+          byteSize: assets.byteSize,
+          updatedAt: issueAttachments.updatedAt,
+        })
+        .from(issueAttachments)
+        .innerJoin(
+          assets,
+          and(eq(assets.id, issueAttachments.assetId), eq(assets.companyId, issueAttachments.companyId)),
+        )
+        .where(
+          and(
+            eq(issueAttachments.companyId, issue.companyId),
+            eq(issueAttachments.issueId, issue.id),
+          ),
+        ),
+      db
         .select({ id: heartbeatRuns.id, agentId: heartbeatRuns.agentId, status: heartbeatRuns.status })
         .from(heartbeatRuns)
         .where(
@@ -225,6 +269,12 @@ export async function collectDispositionRepairSourceState(
       .map((row) => ({ ...row, decidedAt: row.decidedAt?.toISOString() ?? null }))
       .sort((a, b) => a.id.localeCompare(b.id)),
     workProducts: workProducts
+      .map((row) => ({ ...row, updatedAt: row.updatedAt.toISOString() }))
+      .sort((a, b) => a.id.localeCompare(b.id)),
+    documents: issueDocs
+      .map((row) => ({ ...row, updatedAt: row.updatedAt.toISOString() }))
+      .sort((a, b) => a.id.localeCompare(b.id)),
+    attachments: attachments
       .map((row) => ({ ...row, updatedAt: row.updatedAt.toISOString() }))
       .sort((a, b) => a.id.localeCompare(b.id)),
   };

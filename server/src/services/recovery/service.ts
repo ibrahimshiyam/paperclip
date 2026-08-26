@@ -226,6 +226,22 @@ function recoveryCauseTitle(cause: StrandedRecoveryCause) {
   }
 }
 
+function recoveryUnblockDescriptor(action: Pick<
+  typeof issueRecoveryActions.$inferSelect,
+  "ownerAgentId" | "ownerUserId" | "nextAction"
+>) {
+  const actionText = action.nextAction?.trim() ||
+    "Inspect the recovery evidence, then retry, reassign, repair the execution path, or record an intentional disposition.";
+  return {
+    owner: action.ownerAgentId
+      ? { agentId: action.ownerAgentId }
+      : action.ownerUserId
+        ? { userId: action.ownerUserId }
+        : "board",
+    action: actionText.slice(0, 2_000),
+  };
+}
+
 function recoveryNoticeMetadata(input: {
   cause: string;
   latestRun: LatestIssueRun;
@@ -3731,6 +3747,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
     const updated = await issuesSvc.update(input.issue.id, {
       status: "blocked",
+      unblockDescriptor: recoveryUnblockDescriptor(action),
     });
     if (!updated) return null;
     const sourceAssigneePreserved =
@@ -3939,6 +3956,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const updated = await issuesSvc.update(input.issue.id, {
       status: "blocked",
       blockedByIssueIds: blockerIds,
+      ...(blockerIds.length === 0
+        ? { unblockDescriptor: recoveryUnblockDescriptor(recoveryAction) }
+        : {}),
     });
     if (!updated) return null;
     if (isProviderQuotaWait) return updated;

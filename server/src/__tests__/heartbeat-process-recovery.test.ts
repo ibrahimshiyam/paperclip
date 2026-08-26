@@ -10,6 +10,7 @@ import {
   agents,
   agentRuntimeState,
   agentWakeupRequests,
+  assets,
   authUsers,
   budgetPolicies,
   companySecretBindings,
@@ -28,6 +29,7 @@ import {
   executionWorkspaces,
   heartbeatRunEvents,
   heartbeatRuns,
+  issueAttachments,
   issueComments,
   issueDocuments,
   issuePlanDecompositions,
@@ -393,6 +395,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await db.delete(documentAnnotationAnchorSnapshots);
     await db.delete(documentAnnotationThreads);
     await db.delete(issueWorkProducts);
+    await db.delete(issueAttachments);
     await db.delete(issueComments);
     await db.delete(issueDocuments);
     await db.delete(documentRevisions);
@@ -453,6 +456,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       await db.delete(issueDocuments);
       await db.delete(documentRevisions);
       await db.delete(documents);
+      await db.delete(assets);
       await db.delete(companySecretBindings);
       await db.delete(companySecrets);
       try {
@@ -3890,6 +3894,78 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(recoveryIssues).toHaveLength(0);
   });
 
+  it("counts agent uploads as concrete evidence before requesting a missing-disposition handoff", async () => {
+    const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+    mockAdapterExecute.mockImplementationOnce(async () => {
+      const assetId = randomUUID();
+      await db.insert(assets).values({
+        id: assetId,
+        companyId,
+        provider: "test",
+        objectKey: `run-${runId}/evidence.pdf`,
+        contentType: "application/pdf",
+        byteSize: 128,
+        sha256: "upload-evidence-sha256",
+        originalFilename: "evidence.pdf",
+        createdByAgentId: agentId,
+      });
+      await db.insert(issueAttachments).values({
+        companyId,
+        issueId,
+        assetId,
+      });
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Uploaded PDF evidence but did not choose a final issue disposition.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId, 5_000);
+
+    const handoffWakeups = await waitForValue(async () => {
+      const rows = await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.agentId, agentId));
+      const matches = rows.filter((wakeup) => wakeup.reason === "finish_successful_run_handoff");
+      return matches.length > 0 ? matches : null;
+    }, 5_000);
+    await waitForHeartbeatIdle(db, 5_000);
+    const classifiedRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(classifiedRun?.livenessState).toBe("advanced");
+    expect(classifiedRun?.livenessReason).toContain("1 attachment(s)");
+    expect(handoffWakeups).toHaveLength(1);
+    expect(handoffWakeups[0]?.idempotencyKey).toBe(`finish_successful_run_handoff:${issueId}:${runId}:1`);
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    const handoffComment = comments.find((comment) => comment.body === SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY);
+    expect(handoffComment?.metadata).toMatchObject({
+      sections: expect.arrayContaining([
+        expect.objectContaining({
+          title: "Run evidence",
+          rows: expect.arrayContaining([
+            expect.objectContaining({
+              label: "Detected progress",
+              value: expect.stringContaining("1 attachment(s)"),
+            }),
+          ]),
+        }),
+      ]),
+    });
+  });
+
   it("redacts secret-bearing successful-run detected progress before handoff disclosure", async () => {
     const { agentId, runId, issueId } = await seedQueuedIssueRunFixture();
     const bearerSecret = "live-bearer-token-value";
@@ -4412,6 +4488,68 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
+  it("includes issue documents and uploads in the disposition-repair source fingerprint", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "cancelled",
+      retryReason: "issue_continuation_needed",
+      runErrorCode: "issue_continuation_waiting_on_review",
+    });
+    const sourceIssue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
+    const initial = await collectDispositionRepairSourceState(db, { issue: sourceIssue });
+
+    const documentId = randomUUID();
+    const revisionId = randomUUID();
+    await db.insert(documents).values({
+      id: documentId,
+      companyId,
+      title: "Evidence rows",
+      format: "markdown",
+      latestBody: "# Evidence\n\n- E01 verified",
+      latestRevisionId: revisionId,
+      latestRevisionNumber: 1,
+      createdByAgentId: agentId,
+      updatedByAgentId: agentId,
+    });
+    await db.insert(documentRevisions).values({
+      id: revisionId,
+      companyId,
+      documentId,
+      revisionNumber: 1,
+      title: "Evidence rows",
+      format: "markdown",
+      body: "# Evidence\n\n- E01 verified",
+      createdByAgentId: agentId,
+    });
+    await db.insert(issueDocuments).values({
+      companyId,
+      issueId,
+      documentId,
+      key: "evidence",
+    });
+    const assetId = randomUUID();
+    await db.insert(assets).values({
+      id: assetId,
+      companyId,
+      provider: "test",
+      objectKey: `issue-${issueId}/evidence.pdf`,
+      contentType: "application/pdf",
+      byteSize: 128,
+      sha256: "uploaded-evidence-sha256",
+      originalFilename: "evidence.pdf",
+      createdByAgentId: agentId,
+    });
+    await db.insert(issueAttachments).values({
+      companyId,
+      issueId,
+      assetId,
+    });
+
+    const withEvidence = await collectDispositionRepairSourceState(db, { issue: sourceIssue });
+
+    expect(withEvidence.fingerprint).not.toBe(initial.fingerprint);
+  });
+
   it("reschedules an expired persisted disposition repair without duplicating the retry", async () => {
     const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
       status: "in_progress",
@@ -4682,7 +4820,14 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         sql`${heartbeatRuns.contextSnapshot} ->> 'dispositionRepairAttempt' = '6'`,
       )),
     ]);
-    expect(sourceAfter).toMatchObject({ status: "blocked", assigneeAgentId: agentId });
+    expect(sourceAfter).toMatchObject({
+      status: "blocked",
+      assigneeAgentId: agentId,
+      unblockDescriptor: {
+        owner: "board",
+        action: expect.stringContaining("Inspect the evidence"),
+      },
+    });
     expect(action).toMatchObject({
       kind: "deliberate_wait_without_target",
       status: "active",
@@ -4727,6 +4872,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(sourceIssue).toMatchObject({
       status: "blocked",
       assigneeAgentId: agentId,
+      unblockDescriptor: {
+        owner: "board",
+        action: expect.stringContaining("Inspect the evidence"),
+      },
     });
 
     const action = await db

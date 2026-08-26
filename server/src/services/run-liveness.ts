@@ -18,6 +18,7 @@ export interface RunLivenessEvidenceInput {
   documentRevisionsCreated: number;
   planDocumentRevisionsCreated: number;
   workProductsCreated: number;
+  attachmentsCreated: number;
   workspaceOperationsCreated: number;
   activityEventsCreated: number;
   toolOrActionEventsCreated: number;
@@ -52,6 +53,7 @@ const DEFAULT_EVIDENCE: RunLivenessEvidenceInput = {
   documentRevisionsCreated: 0,
   planDocumentRevisionsCreated: 0,
   workProductsCreated: 0,
+  attachmentsCreated: 0,
   workspaceOperationsCreated: 0,
   activityEventsCreated: 0,
   toolOrActionEventsCreated: 0,
@@ -188,6 +190,7 @@ function normalizeEvidence(evidence: Partial<RunLivenessEvidenceInput> | null | 
     documentRevisionsCreated: normalizeCount(evidence?.documentRevisionsCreated),
     planDocumentRevisionsCreated: normalizeCount(evidence?.planDocumentRevisionsCreated),
     workProductsCreated: normalizeCount(evidence?.workProductsCreated),
+    attachmentsCreated: normalizeCount(evidence?.attachmentsCreated),
     workspaceOperationsCreated: normalizeCount(evidence?.workspaceOperationsCreated),
     activityEventsCreated: normalizeCount(evidence?.activityEventsCreated),
     toolOrActionEventsCreated: normalizeCount(evidence?.toolOrActionEventsCreated),
@@ -204,6 +207,7 @@ export function hasConcreteActionEvidence(evidence: Partial<RunLivenessEvidenceI
     normalized.issueCommentsCreated +
       normalized.documentRevisionsCreated +
       normalized.workProductsCreated +
+      normalized.attachmentsCreated +
       normalized.activityEventsCreated +
       normalized.toolOrActionEventsCreated >
     0
@@ -215,6 +219,7 @@ function evidenceReason(evidence: RunLivenessEvidenceInput) {
   if (evidence.issueCommentsCreated > 0) parts.push(`${evidence.issueCommentsCreated} issue comment(s)`);
   if (evidence.documentRevisionsCreated > 0) parts.push(`${evidence.documentRevisionsCreated} document revision(s)`);
   if (evidence.workProductsCreated > 0) parts.push(`${evidence.workProductsCreated} work product(s)`);
+  if (evidence.attachmentsCreated > 0) parts.push(`${evidence.attachmentsCreated} attachment(s)`);
   if (evidence.workspaceOperationsCreated > 0) parts.push(`${evidence.workspaceOperationsCreated} workspace operation(s)`);
   if (evidence.activityEventsCreated > 0) parts.push(`${evidence.activityEventsCreated} activity event(s)`);
   if (evidence.toolOrActionEventsCreated > 0) parts.push(`${evidence.toolOrActionEventsCreated} tool/action event(s)`);

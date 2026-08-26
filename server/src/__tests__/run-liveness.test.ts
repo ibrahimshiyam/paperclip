@@ -38,7 +38,7 @@ describe("run liveness classifier", () => {
     expect(classification.actionability).toBe("unknown");
   });
 
-  it("treats issue comments, documents, products, and actions as progress", () => {
+  it("treats issue comments, documents, products, attachments, and actions as progress", () => {
     const latestEvidenceAt = new Date("2026-04-18T12:00:00Z");
     const classification = classifyRunLiveness({
       ...baseInput,
@@ -49,6 +49,7 @@ describe("run liveness classifier", () => {
         issueCommentsCreated: 1,
         documentRevisionsCreated: 1,
         workProductsCreated: 1,
+        attachmentsCreated: 1,
         toolOrActionEventsCreated: 1,
         latestEvidenceAt,
       },
@@ -56,6 +57,7 @@ describe("run liveness classifier", () => {
 
     expect(classification.livenessState).toBe("advanced");
     expect(classification.lastUsefulActionAt).toBe(latestEvidenceAt);
+    expect(classification.livenessReason).toContain("1 attachment(s)");
   });
 
   it("does not treat workspace operations alone as concrete progress", () => {

@@ -3,11 +3,13 @@ import type { Db } from "@paperclipai/db";
 import {
   activityLog,
   agents,
+  assets,
   documentRevisions,
   environmentLeases,
   environments,
   heartbeatRunEvents,
   heartbeatRuns,
+  issueAttachments,
   issueComments,
   issueDocuments,
   issues,
@@ -246,6 +248,26 @@ export function activityService(db: Db) {
           ),
         );
 
+      const [attachmentStats] = await db
+        .select({
+          count: sql<number>`count(*)::int`,
+          latestAt: sql<Date | null>`max(${issueAttachments.createdAt})`,
+        })
+        .from(issueAttachments)
+        .innerJoin(assets, and(
+          eq(issueAttachments.assetId, assets.id),
+          eq(assets.companyId, issueAttachments.companyId),
+        ))
+        .where(
+          and(
+            eq(issueAttachments.companyId, companyId),
+            eq(issueAttachments.issueId, issueId),
+            eq(assets.createdByAgentId, run.agentId),
+            run.startedAt ? sql`${issueAttachments.createdAt} >= ${run.startedAt}` : sql`true`,
+            run.finishedAt ? sql`${issueAttachments.createdAt} <= ${run.finishedAt}` : sql`true`,
+          ),
+        );
+
       const [workspaceOperationStats] = await db
         .select({
           count: sql<number>`count(*)::int`,
@@ -284,6 +306,7 @@ export function activityService(db: Db) {
           documentRevisionsCreated: countValue(documentStats?.count),
           planDocumentRevisionsCreated: countValue(documentStats?.planCount),
           workProductsCreated: countValue(workProductStats?.count),
+          attachmentsCreated: countValue(attachmentStats?.count),
           workspaceOperationsCreated: countValue(workspaceOperationStats?.count),
           activityEventsCreated: countValue(activityStats?.count),
           toolOrActionEventsCreated: countValue(eventStats?.count),
@@ -291,6 +314,7 @@ export function activityService(db: Db) {
             commentStats?.latestAt,
             documentStats?.latestAt,
             workProductStats?.latestAt,
+            attachmentStats?.latestAt,
             workspaceOperationStats?.latestAt,
             activityStats?.latestAt,
             eventStats?.latestAt,
