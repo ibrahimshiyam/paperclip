@@ -397,6 +397,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await db.delete(documentAnnotationThreads);
     await db.delete(issueWorkProducts);
     await db.delete(issueAttachments);
+    await db.delete(assets);
     await db.delete(issueComments);
     await db.delete(issueDocuments);
     await db.delete(documentRevisions);
