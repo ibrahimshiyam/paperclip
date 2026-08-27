@@ -310,6 +310,73 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     await prepared.cleanup();
   });
 
+  it("injects a task workspace helper-only shell policy when requested", async () => {
+    const configHome = await makeConfigHome({
+      permission: {
+        bash: {
+          "*": "allow",
+          "git status*": "allow",
+        },
+      },
+    });
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome },
+      config: {},
+      taskWorkspaceCommandPolicy: "helper_only",
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+    const runtimeConfig = JSON.parse(
+      await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
+    ) as { permission?: { bash?: Record<string, string>; external_directory?: string } };
+
+    expect(runtimeConfig.permission?.external_directory).toBe("allow");
+    expect(runtimeConfig.permission?.bash).toMatchObject({
+      "*": "allow",
+      "git status*": "allow",
+      "cat *": "deny",
+      "head *": "deny",
+      "tail *": "deny",
+      "less *": "deny",
+      "more *": "deny",
+      "grep *": "deny",
+      "rg *": "deny",
+      "sed *": "deny",
+      "awk *": "deny",
+      "ls *": "deny",
+      "find *": "deny",
+      "touch *": "deny",
+      "mkdir *": "deny",
+      "cp *": "deny",
+      "mv *": "deny",
+      "echo * > *": "deny",
+      "printf * > *": "deny",
+      "tee *": "deny",
+      "task_workspace.py *": "allow",
+      "python task_workspace.py *": "allow",
+      "python3 task_workspace.py *": "allow",
+      "*/task_workspace.py *": "allow",
+    });
+    expect(prepared.notes).toContain(
+      "Injected task workspace helper-only shell policy: use task_workspace.py for workspace reads, searches, lists, and writes.",
+    );
+    await prepared.cleanup();
+  });
+
+  it("does not inject task workspace shell policy by default", async () => {
+    const configHome = await makeConfigHome({ permission: { bash: { "*": "allow" } } });
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome },
+      config: {},
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+    const runtimeConfig = JSON.parse(
+      await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
+    ) as { permission?: { bash?: Record<string, string> } };
+
+    expect(runtimeConfig.permission?.bash).toEqual({ "*": "allow" });
+    await prepared.cleanup();
+  });
+
   it("respects explicit opt-out", async () => {
     const configHome = await makeConfigHome();
     const prepared = await prepareOpenCodeRuntimeConfig({

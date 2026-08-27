@@ -975,7 +975,11 @@ describe("renderPaperclipWakePrompt", () => {
 
     expect(prompt).toContain("## Existing task evidence to reuse");
     expect(prompt).toContain("Use approved task workspace helper commands such as `task_workspace.py read`");
+    expect(prompt).toContain("task_workspace.py read review_state.md");
+    expect(prompt).toContain("task_workspace.py read page-4.txt");
     expect(prompt).toContain("do not try plain `cat`");
+    expect(prompt).not.toContain("cat review_state.md");
+    expect(prompt).not.toContain("cat page-4.txt");
     expect(prompt).toContain("2002.00388v4.pdf (application/pdf, 2097312 bytes)");
     expect(prompt).toContain("canonical local file: paper.pdf");
     expect(prompt).toContain("local copy: attachments/2002.00388v4.pdf");
@@ -988,6 +992,64 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain("page coverage 1-20");
     expect(prompt).toContain("\"nextGate\":\"review validation\"");
     expect(prompt).not.toContain("No documents or evidence generated");
+  });
+
+  it("guides literature recovery reads through task_workspace instead of plain shell reads", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_recovery_action_restored",
+      issue: {
+        id: "22260250-5768-4921-bd24-3563368ec07b",
+        identifier: "ACA-47",
+        title: "Deep read verified paper",
+        status: "in_progress",
+      },
+      artifactInventory: {
+        instruction: "Reuse existing extraction and review artifacts before any retrieval attempt.",
+        counts: { documents: 2, workProducts: 2, attachments: 1 },
+        attachments: [],
+        documents: [
+          {
+            id: "doc-1",
+            key: "review_state.md",
+            title: "Review state",
+            latestRevisionNumber: 1,
+            updatedAt: "2026-08-27T09:00:00.000Z",
+          },
+          {
+            id: "doc-2",
+            key: "page-4.txt",
+            title: "Extracted page 4",
+            latestRevisionNumber: 1,
+            updatedAt: "2026-08-27T09:01:00.000Z",
+          },
+        ],
+        workProducts: [
+          {
+            id: "wp-1",
+            type: "deep_read_extraction_state",
+            title: "Extraction inventory",
+            status: "ready_for_review",
+            reviewState: "none",
+            url: null,
+            summary: "Use review_state.md and page-4.txt to continue validation.",
+            metadata: { nextGate: "evidence validation" },
+            updatedAt: "2026-08-27T09:02:00.000Z",
+          },
+        ],
+        truncated: false,
+      },
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      comments: [],
+      fallbackFetchNeeded: false,
+    });
+
+    expect(prompt).toContain("task_workspace.py read review_state.md");
+    expect(prompt).toContain("task_workspace.py read page-4.txt");
+    expect(prompt).toContain("task_workspace.py search");
+    expect(prompt).toContain("task_workspace.py list");
+    expect(prompt).toContain("task_workspace.py write");
+    expect(prompt).not.toContain("cat review_state.md");
+    expect(prompt).not.toContain("cat page-4.txt");
   });
 
   it("leaves the execution contract to the heartbeat template on fresh scoped wake prompts", () => {

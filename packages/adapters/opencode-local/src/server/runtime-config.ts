@@ -9,6 +9,35 @@ type PreparedOpenCodeRuntimeConfig = {
   cleanup: () => Promise<void>;
 };
 
+export type OpenCodeTaskWorkspaceCommandPolicy = "default" | "helper_only";
+
+const TASK_WORKSPACE_HELPER_ONLY_BASH_PERMISSION_RULES: [string, string][] = [
+  ["cat *", "deny"],
+  ["head *", "deny"],
+  ["tail *", "deny"],
+  ["less *", "deny"],
+  ["more *", "deny"],
+  ["grep *", "deny"],
+  ["rg *", "deny"],
+  ["sed *", "deny"],
+  ["awk *", "deny"],
+  ["ls *", "deny"],
+  ["find *", "deny"],
+  ["touch *", "deny"],
+  ["mkdir *", "deny"],
+  ["cp *", "deny"],
+  ["mv *", "deny"],
+  ["echo * > *", "deny"],
+  ["printf * > *", "deny"],
+  ["tee *", "deny"],
+  ["task_workspace.py *", "allow"],
+  ["python task_workspace.py *", "allow"],
+  ["python3 task_workspace.py *", "allow"],
+  ["*/task_workspace.py *", "allow"],
+  ["python */task_workspace.py *", "allow"],
+  ["python3 */task_workspace.py *", "allow"],
+];
+
 function resolveXdgConfigHome(env: Record<string, string>): string {
   return (
     (typeof env.XDG_CONFIG_HOME === "string" && env.XDG_CONFIG_HOME.trim()) ||
@@ -19,6 +48,20 @@ function resolveXdgConfigHome(env: Record<string, string>): string {
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function mergeTaskWorkspaceHelperOnlyPermissions(
+  existingPermission: Record<string, unknown>,
+): Record<string, unknown> {
+  const existingBash = isPlainObject(existingPermission.bash) ? existingPermission.bash : {};
+  const bash: Record<string, unknown> = { ...existingBash };
+  for (const [pattern, permission] of TASK_WORKSPACE_HELPER_ONLY_BASH_PERMISSION_RULES) {
+    bash[pattern] = permission;
+  }
+  return {
+    ...existingPermission,
+    bash,
+  };
 }
 
 // Recursively replace {env:VAR} placeholders with the resolved value. Used to bake
@@ -106,6 +149,7 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   env: Record<string, string>;
   config: Record<string, unknown>;
   targetIsRemote?: boolean;
+  taskWorkspaceCommandPolicy?: OpenCodeTaskWorkspaceCommandPolicy;
 }): Promise<PreparedOpenCodeRuntimeConfig> {
   const skipPermissions = asBoolean(input.config.dangerouslySkipPermissions, true);
   if (!skipPermissions) {
@@ -152,9 +196,19 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   const existingPermission = isPlainObject(existingConfig.permission)
     ? existingConfig.permission
     : {};
+  const taskWorkspaceCommandPolicy = input.taskWorkspaceCommandPolicy ?? "default";
+  const mergedPermission =
+    taskWorkspaceCommandPolicy === "helper_only"
+      ? mergeTaskWorkspaceHelperOnlyPermissions(existingPermission)
+      : existingPermission;
   const notes = [
     "Injected runtime OpenCode config with permission.external_directory=allow to avoid headless approval prompts.",
   ];
+  if (taskWorkspaceCommandPolicy === "helper_only") {
+    notes.push(
+      "Injected task workspace helper-only shell policy: use task_workspace.py for workspace reads, searches, lists, and writes.",
+    );
+  }
 
   // Merge gateway/custom provider definitions supplied via PAPERCLIP_OPENCODE_PROVIDERS
   // (a JSON object in OpenCode's `provider` shape). OpenCode resolves a `--model
@@ -208,7 +262,7 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   const nextConfig: Record<string, unknown> = {
     ...existingConfig,
     permission: {
-      ...existingPermission,
+      ...mergedPermission,
       external_directory: "allow",
     },
   };

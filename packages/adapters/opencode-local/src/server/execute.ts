@@ -83,6 +83,28 @@ function resolveOpenCodeBiller(env: Record<string, string>, provider: string | n
 }
 
 const REMOTE_OPENCODE_MODELS_PROBE_DEFAULT_TIMEOUT_SEC = 20;
+
+function hasPaperclipTaskWorkspaceInventory(context: Record<string, unknown>): boolean {
+  const wake = parseObject(context.paperclipWake);
+  const inventory = parseObject(wake.artifactInventory);
+  return Object.keys(inventory).length > 0;
+}
+
+function shouldUseTaskWorkspaceHelperOnlyPolicy(
+  config: Record<string, unknown>,
+  context: Record<string, unknown>,
+): boolean {
+  const configured = asString(
+    config.taskWorkspaceCommandPolicy ?? config.paperclipTaskWorkspaceCommandPolicy,
+    "auto",
+  )
+    .trim()
+    .toLowerCase()
+    .replace(/-/g, "_");
+  if (configured === "off" || configured === "default" || configured === "false") return false;
+  if (configured === "helper_only" || configured === "task_workspace_helper_only") return true;
+  return configured === "auto" && hasPaperclipTaskWorkspaceInventory(context);
+}
 const REMOTE_OPENCODE_MODELS_PROBE_SANDBOX_TIMEOUT_SEC = 120;
 
 export async function ensureRemoteOpenCodeModelConfiguredAndAvailable(input: {
@@ -334,7 +356,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // selection is already handled via the --model CLI flag.  Set after the
   // envConfig loop so user overrides cannot disable this guard.
   env.OPENCODE_DISABLE_PROJECT_CONFIG = "true";
-  const preparedRuntimeConfig = await prepareOpenCodeRuntimeConfig({ env, config });
+  const preparedRuntimeConfig = await prepareOpenCodeRuntimeConfig({
+    env,
+    config,
+    targetIsRemote: executionTargetIsRemote,
+    taskWorkspaceCommandPolicy: shouldUseTaskWorkspaceHelperOnlyPolicy(config, context)
+      ? "helper_only"
+      : "default",
+  });
   const localRuntimeConfigHome =
     preparedRuntimeConfig.notes.length > 0 ? preparedRuntimeConfig.env.XDG_CONFIG_HOME : "";
   try {

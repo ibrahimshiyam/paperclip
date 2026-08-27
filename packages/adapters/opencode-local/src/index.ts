@@ -118,6 +118,7 @@ Core fields:
 - model (string, required): OpenCode model id in provider/model format (for example anthropic/claude-sonnet-4-5)
 - variant (string, optional): provider-specific reasoning/profile variant passed as --variant (for example minimal|low|medium|high|xhigh|max)
 - dangerouslySkipPermissions (boolean, optional): inject a runtime OpenCode config that allows \`external_directory\` access without interactive prompts; defaults to true for unattended Paperclip runs
+- taskWorkspaceCommandPolicy (string, optional): use \`helper_only\` to allow the Paperclip task workspace helper while denying plain shell file reads/searches/lists/writes; defaults to \`auto\`, which enables this for task runs that include a workspace artifact inventory
 - promptTemplate (string, optional): run prompt template
 - command (string, optional): defaults to "opencode"
 - extraArgs (string[], optional): additional CLI args
@@ -139,4 +140,6 @@ Notes:
 - When \`dangerouslySkipPermissions\` is enabled, Paperclip injects a temporary \
   runtime config with \`permission.external_directory=allow\` so headless runs do \
   not stall on approval prompts.
+- For restricted Paperclip task workspaces, agents must use \
+  \`task_workspace.py read/search/list/write\` instead of shell file commands.
 `;
