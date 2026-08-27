@@ -141,4 +141,45 @@ describe("materializePaperclipPdfAttachments", () => {
     expect(prompt).toContain("https://arxiv.org/pdf/2002.00388");
     expect(prompt).not.toContain("canonical local file: paper.pdf");
   });
+
+  it("retries transient startup fetch failures before declaring an uploaded attachment unavailable", async () => {
+    const workspace = await makeWorkspace();
+    const uploadedPdf = pdfBytes("retry");
+    const fetchImpl = vi.fn()
+      .mockRejectedValueOnce(new TypeError("fetch failed: connect ECONNREFUSED 100.86.18.61:3100"))
+      .mockResolvedValueOnce(new Response(uploadedPdf, { status: 200 }));
+
+    const result = await materializePaperclipPdfAttachments({
+      context: {
+        taskId: "issue-retry",
+        paperclipWake: {
+          artifactInventory: {
+            counts: { documents: 0, workProducts: 0, attachments: 1 },
+            documents: [],
+            workProducts: [],
+            attachments: [
+              {
+                id: "attachment-retry",
+                filename: "retry.pdf",
+                contentType: "application/pdf",
+                byteSize: uploadedPdf.byteLength,
+                contentPath: "/api/attachments/attachment-retry/content",
+              },
+            ],
+          },
+        },
+      },
+      workspaceCwd: workspace,
+      apiBaseUrl: "https://paperclip.example",
+      apiKey: "run-token",
+      fetchImpl,
+      fetchMaxAttempts: 2,
+      retryDelayMs: 0,
+    });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(result.materialized).toHaveLength(1);
+    await expect(fs.readFile(path.join(workspace, ".paperclip-work", "issue-retry", "paper.pdf"), "utf8"))
+      .resolves.toContain("%PDF-1.7");
+  });
 });

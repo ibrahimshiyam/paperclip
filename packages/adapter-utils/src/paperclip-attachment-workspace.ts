@@ -13,6 +13,8 @@ export interface MaterializePaperclipPdfAttachmentsOptions {
   runId?: string | null;
   fetchImpl?: FetchLike;
   maxPdfBytes?: number;
+  fetchMaxAttempts?: number;
+  retryDelayMs?: number;
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
 }
 
@@ -92,6 +94,44 @@ async function copyFileAtomic(sourcePath: string, targetPath: string) {
   await fs.rename(tempPath, targetPath);
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function shouldRetryFetch(error: unknown, response: Response | null): boolean {
+  if (response) return response.status >= 500 || response.status === 408 || response.status === 429;
+  if (!(error instanceof Error)) return false;
+  return /ECONNREFUSED|ECONNRESET|ETIMEDOUT|fetch failed/i.test(error.message);
+}
+
+async function fetchWithStartupRetry(
+  fetchImpl: FetchLike,
+  url: string,
+  init: RequestInit,
+  options: {
+    maxAttempts: number;
+    retryDelayMs: number;
+  },
+): Promise<Response> {
+  let lastError: unknown = null;
+  let lastResponse: Response | null = null;
+  for (let attempt = 1; attempt <= options.maxAttempts; attempt += 1) {
+    try {
+      const response = await fetchImpl(url, init);
+      if (response.ok || !shouldRetryFetch(null, response) || attempt === options.maxAttempts) {
+        return response;
+      }
+      lastResponse = response;
+    } catch (error) {
+      if (!shouldRetryFetch(error, null) || attempt === options.maxAttempts) throw error;
+      lastError = error;
+    }
+    await sleep(options.retryDelayMs);
+  }
+  if (lastResponse) return lastResponse;
+  throw lastError instanceof Error ? lastError : new Error("Attachment fetch failed.");
+}
+
 function cloneWakeWithInventory(
   context: Record<string, unknown>,
   attachments: Record<string, unknown>[],
@@ -145,6 +185,8 @@ export async function materializePaperclipPdfAttachments(
   const taskWorkspaceDir = path.join(workspaceCwd, ".paperclip-work", issueId);
   const attachmentsDir = path.join(taskWorkspaceDir, "attachments");
   const maxPdfBytes = options.maxPdfBytes ?? DEFAULT_MAX_PDF_BYTES;
+  const fetchMaxAttempts = Math.max(1, Math.floor(options.fetchMaxAttempts ?? 6));
+  const retryDelayMs = Math.max(0, Math.floor(options.retryDelayMs ?? 500));
   const materialized: MaterializedPaperclipPdfAttachment[] = [];
   const updatedAttachments: Record<string, unknown>[] = [];
   let canonicalSourcePath: string | null = null;
@@ -167,12 +209,17 @@ export async function materializePaperclipPdfAttachments(
       throw new Error(`Cannot materialize uploaded PDF attachment "${filename}": PDF is larger than ${maxPdfBytes} bytes.`);
     }
 
-    const response = await fetchImpl(resolveAttachmentUrl(contentPath, apiBaseUrl), {
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        ...(options.runId ? { "X-Paperclip-Run-Id": options.runId } : {}),
+    const response = await fetchWithStartupRetry(
+      fetchImpl,
+      resolveAttachmentUrl(contentPath, apiBaseUrl),
+      {
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          ...(options.runId ? { "X-Paperclip-Run-Id": options.runId } : {}),
+        },
       },
-    });
+      { maxAttempts: fetchMaxAttempts, retryDelayMs },
+    );
     if (!response.ok) {
       throw new Error(`Cannot materialize uploaded PDF attachment "${filename}": Paperclip API returned HTTP ${response.status}.`);
     }
