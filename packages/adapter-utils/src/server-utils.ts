@@ -716,6 +716,7 @@ type PaperclipWakeArtifactInventory = {
     downloadPath: string | null;
     localPath: string | null;
     canonicalLocalPath: string | null;
+    extractedTextLocalPath: string | null;
     updatedAt: string | null;
   }>;
   counts: {
@@ -832,6 +833,7 @@ function normalizePaperclipWakeArtifactInventory(value: unknown): PaperclipWakeA
             downloadPath: normalizeRecoveryArtifactText(row.downloadPath),
             localPath: normalizeRecoveryArtifactText(row.localPath),
             canonicalLocalPath: normalizeRecoveryArtifactText(row.canonicalLocalPath),
+            extractedTextLocalPath: normalizeRecoveryArtifactText(row.extractedTextLocalPath),
             updatedAt: normalizeRecoveryArtifactText(row.updatedAt),
           };
         })
@@ -1791,14 +1793,22 @@ export function renderPaperclipWakePrompt(
           lines.push(`  canonical local file: ${attachment.canonicalLocalPath}`);
         }
         if (attachment.localPath) lines.push(`  local copy: ${attachment.localPath}`);
+        if (attachment.extractedTextLocalPath) {
+          lines.push(`  extracted text file: ${attachment.extractedTextLocalPath}`);
+        }
         if (attachment.contentPath) lines.push(`  authenticated content path: ${attachment.contentPath}`);
         if (attachment.downloadPath) lines.push(`  authenticated download path: ${attachment.downloadPath}`);
-        if (attachment.canonicalLocalPath || attachment.localPath) {
+        if (attachment.canonicalLocalPath || attachment.localPath || attachment.extractedTextLocalPath) {
           const localPath = attachment.canonicalLocalPath ?? attachment.localPath ?? "";
+          const extractedTextLocalPath = attachment.extractedTextLocalPath ?? "";
           if (/\.pdf$/i.test(localPath)) {
             lines.push("  use the local PDF above; do not pass the authenticated API path to fetch-pdf.");
-          } else if (/\.docx$/i.test(localPath)) {
-            lines.push("  use the local DOCX above; unzip/read it locally instead of asking the user to paste or reupload it.");
+          } else if (/\.docx$/i.test(localPath) || /\.txt$/i.test(extractedTextLocalPath)) {
+            lines.push(
+              extractedTextLocalPath
+                ? `  read the extracted DOCX text with \`task_workspace.py read ${extractedTextLocalPath}\`; do not ask the user to paste, convert, or reupload it.`
+                : "  use the local DOCX above; unzip/read it locally instead of asking the user to paste or reupload it.",
+            );
           } else {
             lines.push("  use the local file above; do not pass the authenticated API path to source-fetch helpers.");
           }
@@ -2316,6 +2326,14 @@ export function buildPaperclipEnv(agent: { id: string; companyId: string }): Rec
     process.env.PAPERCLIP_RUNTIME_API_URL ??
     `http://${runtimeHost}:${runtimePort}`;
   vars.PAPERCLIP_API_URL = apiUrl;
+  const instanceRoot = resolvePaperclipInstanceRootForAdapter();
+  const paperclipHome = path.dirname(path.dirname(instanceRoot));
+  const runtimeBinDirs = [
+    path.join(paperclipHome, "bin"),
+    path.join(instanceRoot, "bin"),
+  ];
+  const existingPath = process.env.PATH ?? defaultPathForPlatform();
+  vars.PATH = [...runtimeBinDirs, existingPath].join(path.delimiter);
   return vars;
 }
 

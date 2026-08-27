@@ -60,6 +60,10 @@ function mergeTaskWorkspaceHelperOnlyPermissions(
   }
   return {
     ...existingPermission,
+    read: "deny",
+    edit: "deny",
+    glob: "deny",
+    grep: "deny",
     bash,
   };
 }

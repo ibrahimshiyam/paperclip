@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { inflateRawSync } from "node:zlib";
 
 const DEFAULT_MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024;
 const DEFAULT_FETCH_MAX_ATTEMPTS = 25;
@@ -29,6 +30,7 @@ export interface MaterializedPaperclipAttachment {
   filename: string;
   localPath: string;
   canonicalLocalPath: string | null;
+  extractedTextLocalPath: string | null;
   byteSize: number;
   kind: "pdf" | "docx" | "attachment";
 }
@@ -170,6 +172,95 @@ async function copyFileAtomic(sourcePath: string, targetPath: string) {
   await fs.rename(tempPath, targetPath);
 }
 
+function readUInt16LE(bytes: Uint8Array, offset: number): number {
+  if (offset + 2 > bytes.byteLength) throw new Error("DOCX ZIP is truncated.");
+  return bytes[offset]! | (bytes[offset + 1]! << 8);
+}
+
+function readUInt32LE(bytes: Uint8Array, offset: number): number {
+  if (offset + 4 > bytes.byteLength) throw new Error("DOCX ZIP is truncated.");
+  return (
+    bytes[offset]! |
+    (bytes[offset + 1]! << 8) |
+    (bytes[offset + 2]! << 16) |
+    (bytes[offset + 3]! << 24)
+  ) >>> 0;
+}
+
+function findEndOfCentralDirectory(bytes: Uint8Array): number {
+  const minOffset = Math.max(0, bytes.byteLength - 65_557);
+  for (let offset = bytes.byteLength - 22; offset >= minOffset; offset -= 1) {
+    if (readUInt32LE(bytes, offset) === 0x06054b50) return offset;
+  }
+  throw new Error("DOCX ZIP central directory was not found.");
+}
+
+function readZipEntry(bytes: Uint8Array, entryName: string): Uint8Array | null {
+  const decoder = new TextDecoder();
+  const eocdOffset = findEndOfCentralDirectory(bytes);
+  const centralDirectorySize = readUInt32LE(bytes, eocdOffset + 12);
+  const centralDirectoryOffset = readUInt32LE(bytes, eocdOffset + 16);
+  const centralDirectoryEnd = centralDirectoryOffset + centralDirectorySize;
+  let offset = centralDirectoryOffset;
+
+  while (offset < centralDirectoryEnd) {
+    if (readUInt32LE(bytes, offset) !== 0x02014b50) {
+      throw new Error("DOCX ZIP central directory is malformed.");
+    }
+    const compressionMethod = readUInt16LE(bytes, offset + 10);
+    const compressedSize = readUInt32LE(bytes, offset + 20);
+    const filenameLength = readUInt16LE(bytes, offset + 28);
+    const extraLength = readUInt16LE(bytes, offset + 30);
+    const commentLength = readUInt16LE(bytes, offset + 32);
+    const localHeaderOffset = readUInt32LE(bytes, offset + 42);
+    const filename = decoder.decode(bytes.subarray(offset + 46, offset + 46 + filenameLength));
+
+    if (filename === entryName) {
+      if (readUInt32LE(bytes, localHeaderOffset) !== 0x04034b50) {
+        throw new Error(`DOCX ZIP local header for "${entryName}" is malformed.`);
+      }
+      const localFilenameLength = readUInt16LE(bytes, localHeaderOffset + 26);
+      const localExtraLength = readUInt16LE(bytes, localHeaderOffset + 28);
+      const dataOffset = localHeaderOffset + 30 + localFilenameLength + localExtraLength;
+      const compressed = bytes.subarray(dataOffset, dataOffset + compressedSize);
+      if (compressionMethod === 0) return compressed;
+      if (compressionMethod === 8) return inflateRawSync(compressed);
+      throw new Error(`DOCX ZIP entry "${entryName}" uses unsupported compression method ${compressionMethod}.`);
+    }
+
+    offset += 46 + filenameLength + extraLength + commentLength;
+  }
+
+  return null;
+}
+
+function decodeXmlEntities(text: string): string {
+  return text
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, "&");
+}
+
+function extractDocxText(bytes: Uint8Array): string | null {
+  const documentXml = readZipEntry(bytes, "word/document.xml");
+  if (!documentXml) return null;
+  const xml = new TextDecoder("utf-8").decode(documentXml);
+  const text = xml
+    .replace(/<w:tab\b[^>]*\/>/g, "\t")
+    .replace(/<w:br\b[^>]*\/>/g, "\n")
+    .replace(/<\/w:p>/g, "\n")
+    .replace(/<\/w:tr>/g, "\n")
+    .replace(/<\/w:tc>/g, "\t")
+    .replace(/<[^>]+>/g, "")
+    .split(/\r?\n/)
+    .map((line) => decodeXmlEntities(line).replace(/[ \t]+/g, " ").trim())
+    .filter(Boolean)
+    .join("\n");
+  return text.length > 0 ? `${text}\n` : null;
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -309,16 +400,27 @@ export async function materializePaperclipAttachments(
       hasCanonicalPdf,
       hasCanonicalCv,
     });
+    let extractedTextLocalPath: string | null = null;
     if (canonicalLocalPath) {
       await copyFileAtomic(absolutePath, path.join(taskWorkspaceDir, canonicalLocalPath));
       if (canonicalLocalPath === "paper.pdf") hasCanonicalPdf = true;
       if (canonicalLocalPath === "cv.docx") hasCanonicalCv = true;
+    }
+    if (kind === "docx") {
+      const extractedText = extractDocxText(bytes);
+      if (extractedText) {
+        extractedTextLocalPath = canonicalLocalPath === "cv.docx"
+          ? "cv.txt"
+          : `${filename.replace(/\.docx$/i, "")}.txt`;
+        await writeFileAtomic(path.join(taskWorkspaceDir, extractedTextLocalPath), new TextEncoder().encode(extractedText));
+      }
     }
 
     const enriched = {
       ...attachment,
       localPath,
       canonicalLocalPath,
+      extractedTextLocalPath,
       materializedAt: new Date().toISOString(),
     };
     updatedAttachments.push(enriched);
@@ -327,6 +429,7 @@ export async function materializePaperclipAttachments(
       filename,
       localPath,
       canonicalLocalPath,
+      extractedTextLocalPath,
       byteSize: bytes.byteLength,
       kind,
     });

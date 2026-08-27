@@ -74,6 +74,35 @@ describe("buildInvocationEnvForLogs", () => {
   });
 });
 
+describe("buildPaperclipEnv", () => {
+  it("puts Paperclip runtime bin directories on PATH for workspace helper commands", () => {
+    const previousHome = process.env.PAPERCLIP_HOME;
+    const previousInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
+    const previousPath = process.env.PATH;
+    const paperclipHome = path.join(os.tmpdir(), `paperclip-home-${randomUUID()}`);
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = "test";
+    process.env.PATH = "/usr/bin";
+
+    try {
+      const env = buildPaperclipEnv({ id: "agent-1", companyId: "company-1" });
+      const parts = env.PATH.split(path.delimiter);
+      expect(parts.slice(0, 2)).toEqual([
+        path.join(paperclipHome, "bin"),
+        path.join(paperclipHome, "instances", "test", "bin"),
+      ]);
+      expect(parts).toContain("/usr/bin");
+    } finally {
+      if (previousHome === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = previousHome;
+      if (previousInstanceId === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
+      else process.env.PAPERCLIP_INSTANCE_ID = previousInstanceId;
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+    }
+  });
+});
+
 describe("sanitizeSshRemoteEnv", () => {
   it("drops inherited host shell identity variables for SSH remote execution", () => {
     expect(

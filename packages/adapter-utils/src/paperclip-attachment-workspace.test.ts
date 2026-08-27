@@ -24,8 +24,77 @@ function pdfBytes(text = "fixture") {
   return new TextEncoder().encode(`%PDF-1.7\n% ${text}\n%%EOF\n`);
 }
 
+function writeUInt16LE(buffer: Uint8Array, offset: number, value: number) {
+  buffer[offset] = value & 0xff;
+  buffer[offset + 1] = (value >>> 8) & 0xff;
+}
+
+function writeUInt32LE(buffer: Uint8Array, offset: number, value: number) {
+  buffer[offset] = value & 0xff;
+  buffer[offset + 1] = (value >>> 8) & 0xff;
+  buffer[offset + 2] = (value >>> 16) & 0xff;
+  buffer[offset + 3] = (value >>> 24) & 0xff;
+}
+
+function storedZip(entries: Array<{ name: string; content: string }>) {
+  const encoder = new TextEncoder();
+  const localParts: Uint8Array[] = [];
+  const centralParts: Uint8Array[] = [];
+  let offset = 0;
+
+  for (const entry of entries) {
+    const name = encoder.encode(entry.name);
+    const content = encoder.encode(entry.content);
+    const local = new Uint8Array(30 + name.byteLength + content.byteLength);
+    writeUInt32LE(local, 0, 0x04034b50);
+    writeUInt16LE(local, 8, 0);
+    writeUInt32LE(local, 18, content.byteLength);
+    writeUInt32LE(local, 22, content.byteLength);
+    writeUInt16LE(local, 26, name.byteLength);
+    local.set(name, 30);
+    local.set(content, 30 + name.byteLength);
+    localParts.push(local);
+
+    const central = new Uint8Array(46 + name.byteLength);
+    writeUInt32LE(central, 0, 0x02014b50);
+    writeUInt16LE(central, 10, 0);
+    writeUInt32LE(central, 20, content.byteLength);
+    writeUInt32LE(central, 24, content.byteLength);
+    writeUInt16LE(central, 28, name.byteLength);
+    writeUInt32LE(central, 42, offset);
+    central.set(name, 46);
+    centralParts.push(central);
+    offset += local.byteLength;
+  }
+
+  const centralSize = centralParts.reduce((sum, part) => sum + part.byteLength, 0);
+  const eocd = new Uint8Array(22);
+  writeUInt32LE(eocd, 0, 0x06054b50);
+  writeUInt16LE(eocd, 8, entries.length);
+  writeUInt16LE(eocd, 10, entries.length);
+  writeUInt32LE(eocd, 12, centralSize);
+  writeUInt32LE(eocd, 16, offset);
+
+  const output = new Uint8Array(offset + centralSize + eocd.byteLength);
+  let cursor = 0;
+  for (const part of [...localParts, ...centralParts, eocd]) {
+    output.set(part, cursor);
+    cursor += part.byteLength;
+  }
+  return output;
+}
+
 function docxBytes() {
-  return new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0x63, 0x76]);
+  return storedZip([
+    {
+      name: "word/document.xml",
+      content:
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">' +
+        "<w:body><w:p><w:r><w:t>Dr. Ibrahim Shiyam</w:t></w:r></w:p>" +
+        "<w:p><w:r><w:t>PhD-qualified technology and digital transformation professional</w:t></w:r></w:p>" +
+        "</w:body></w:document>",
+    },
+  ]);
 }
 
 describe("materializePaperclipAttachments", () => {
@@ -95,6 +164,7 @@ describe("materializePaperclipAttachments", () => {
         filename: "official_paper.pdf",
         localPath: "attachments/official_paper.pdf",
         canonicalLocalPath: "paper.pdf",
+        extractedTextLocalPath: null,
         byteSize: uploadedPdf.byteLength,
         kind: "pdf",
       },
@@ -161,15 +231,20 @@ describe("materializePaperclipAttachments", () => {
         filename: "CV-Dr_Ibrahim_Shiyam.docx",
         localPath: "attachments/CV-Dr_Ibrahim_Shiyam.docx",
         canonicalLocalPath: "cv.docx",
+        extractedTextLocalPath: "cv.txt",
         byteSize: uploadedDocx.byteLength,
         kind: "docx",
       },
     ]);
+    await expect(fs.readFile(path.join(workspace, ".paperclip-work", "issue-per-3", "cv.txt"), "utf8"))
+      .resolves.toContain("Dr. Ibrahim Shiyam");
 
     const prompt = renderPaperclipWakePrompt(result.context.paperclipWake);
     expect(prompt).toContain("canonical local file: cv.docx");
     expect(prompt).toContain("local copy: attachments/CV-Dr_Ibrahim_Shiyam.docx");
-    expect(prompt).toContain("unzip/read it locally instead of asking the user to paste or reupload it");
+    expect(prompt).toContain("extracted text file: cv.txt");
+    expect(prompt).toContain("task_workspace.py read cv.txt");
+    expect(prompt).toContain("do not ask the user to paste, convert, or reupload it");
     expect(prompt).not.toContain("download it from its content path");
   });
 

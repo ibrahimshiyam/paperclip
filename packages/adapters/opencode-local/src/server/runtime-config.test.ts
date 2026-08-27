@@ -330,6 +330,12 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     ) as { permission?: { bash?: Record<string, string>; external_directory?: string } };
 
     expect(runtimeConfig.permission?.external_directory).toBe("allow");
+    expect(runtimeConfig.permission).toMatchObject({
+      read: "deny",
+      edit: "deny",
+      glob: "deny",
+      grep: "deny",
+    });
     expect(runtimeConfig.permission?.bash).toMatchObject({
       "*": "allow",
       "git status*": "allow",
@@ -390,6 +396,12 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     ) as { permission?: { bash?: Record<string, string>; external_directory?: string } };
 
     expect(runtimeConfig.permission?.external_directory).toBeUndefined();
+    expect(runtimeConfig.permission).toMatchObject({
+      read: "deny",
+      edit: "deny",
+      glob: "deny",
+      grep: "deny",
+    });
     expect(runtimeConfig.permission?.bash).toMatchObject({
       "*": "deny",
       "cat *": "deny",
