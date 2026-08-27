@@ -3,12 +3,14 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
   agents,
+  assets,
   companies,
   createDb,
   documentRevisions,
   documents,
   heartbeatRuns,
   issueComments,
+  issueAttachments,
   issueDocuments,
   issues,
 } from "@paperclipai/db";
@@ -58,12 +60,14 @@ describeEmbeddedPostgres("activity service", () => {
 
   afterEach(async () => {
     await db.delete(activityLog);
+    await db.delete(issueAttachments);
     await db.delete(issueComments);
     await db.delete(issueDocuments);
     await db.delete(documentRevisions);
     await db.delete(documents);
     await db.delete(issues);
     await db.delete(heartbeatRuns);
+    await db.delete(assets);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -303,6 +307,101 @@ describeEmbeddedPostgres("activity service", () => {
       livenessReason: "Issue is done",
       continuationAttempt: 0,
       lastUsefulActionAt: completedAt,
+    });
+  });
+
+  it("backfills attachment evidence within run timestamp bounds", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+    const assetId = randomUUID();
+    const attachmentId = randomUUID();
+    const startedAt = new Date("2026-04-18T20:00:00.000Z");
+    const attachmentCreatedAt = new Date("2026-04-18T20:02:00.000Z");
+    const finishedAt = new Date("2026-04-18T20:05:00.000Z");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Inspect uploaded evidence",
+      description: "Use the attachment generated during the run.",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      status: "succeeded",
+      startedAt,
+      finishedAt,
+      contextSnapshot: { issueId },
+      resultJson: { summary: "Attached source evidence." },
+      livenessState: null,
+      livenessReason: null,
+      lastUsefulActionAt: null,
+      nextAction: null,
+    });
+
+    await db.insert(assets).values({
+      id: assetId,
+      companyId,
+      provider: "local_disk",
+      objectKey: `${companyId}/issues/${issueId}/evidence.pdf`,
+      contentType: "application/pdf",
+      byteSize: 512,
+      sha256: "0".repeat(64),
+      originalFilename: "evidence.pdf",
+      createdByAgentId: agentId,
+      createdAt: attachmentCreatedAt,
+      updatedAt: attachmentCreatedAt,
+    });
+
+    await db.insert(issueAttachments).values({
+      id: attachmentId,
+      companyId,
+      issueId,
+      assetId,
+      createdAt: attachmentCreatedAt,
+      updatedAt: attachmentCreatedAt,
+    });
+
+    const service = activityService(db);
+    const { run: backfilledRun } = await waitForIssueRun(
+      service,
+      companyId,
+      issueId,
+      (entry) => entry.runId === runId && entry.livenessState === "advanced",
+    );
+
+    expect(backfilledRun).toMatchObject({
+      runId,
+      livenessState: "advanced",
+      livenessReason: "Run produced concrete action evidence: 1 attachment(s)",
+      lastUsefulActionAt: attachmentCreatedAt,
     });
   });
 

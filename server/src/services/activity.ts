@@ -266,8 +266,8 @@ export function activityService(db: Db) {
             eq(issueAttachments.companyId, companyId),
             eq(issueAttachments.issueId, issueId),
             eq(assets.createdByAgentId, run.agentId),
-            run.startedAt ? sql`${issueAttachments.createdAt} >= ${run.startedAt}` : sql`true`,
-            run.finishedAt ? sql`${issueAttachments.createdAt} <= ${run.finishedAt}` : sql`true`,
+            run.startedAt ? sql`${issueAttachments.createdAt} >= ${run.startedAt.toISOString()}` : sql`true`,
+            run.finishedAt ? sql`${issueAttachments.createdAt} <= ${run.finishedAt.toISOString()}` : sql`true`,
           ),
         );
 
