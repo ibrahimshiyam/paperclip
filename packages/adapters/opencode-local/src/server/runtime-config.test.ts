@@ -377,6 +377,31 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     await prepared.cleanup();
   });
 
+  it("can inject only the task workspace shell policy without enabling headless external-directory access", async () => {
+    const configHome = await makeConfigHome({ permission: { bash: { "*": "deny" } } });
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome },
+      config: { dangerouslySkipPermissions: false },
+      taskWorkspaceCommandPolicy: "helper_only",
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+    const runtimeConfig = JSON.parse(
+      await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
+    ) as { permission?: { bash?: Record<string, string>; external_directory?: string } };
+
+    expect(runtimeConfig.permission?.external_directory).toBeUndefined();
+    expect(runtimeConfig.permission?.bash).toMatchObject({
+      "*": "deny",
+      "cat *": "deny",
+      "task_workspace.py *": "allow",
+      "*/task_workspace.py *": "allow",
+    });
+    expect(prepared.notes).toEqual([
+      "Injected task workspace helper-only shell policy: use task_workspace.py for workspace reads, searches, lists, and writes.",
+    ]);
+    await prepared.cleanup();
+  });
+
   it("respects explicit opt-out", async () => {
     const configHome = await makeConfigHome();
     const prepared = await prepareOpenCodeRuntimeConfig({

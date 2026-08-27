@@ -152,7 +152,8 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   taskWorkspaceCommandPolicy?: OpenCodeTaskWorkspaceCommandPolicy;
 }): Promise<PreparedOpenCodeRuntimeConfig> {
   const skipPermissions = asBoolean(input.config.dangerouslySkipPermissions, true);
-  if (!skipPermissions) {
+  const taskWorkspaceCommandPolicy = input.taskWorkspaceCommandPolicy ?? "default";
+  if (!skipPermissions && taskWorkspaceCommandPolicy !== "helper_only") {
     return {
       env: input.env,
       notes: [],
@@ -196,14 +197,16 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   const existingPermission = isPlainObject(existingConfig.permission)
     ? existingConfig.permission
     : {};
-  const taskWorkspaceCommandPolicy = input.taskWorkspaceCommandPolicy ?? "default";
   const mergedPermission =
     taskWorkspaceCommandPolicy === "helper_only"
       ? mergeTaskWorkspaceHelperOnlyPermissions(existingPermission)
       : existingPermission;
-  const notes = [
-    "Injected runtime OpenCode config with permission.external_directory=allow to avoid headless approval prompts.",
-  ];
+  const notes: string[] = [];
+  if (skipPermissions) {
+    notes.push(
+      "Injected runtime OpenCode config with permission.external_directory=allow to avoid headless approval prompts.",
+    );
+  }
   if (taskWorkspaceCommandPolicy === "helper_only") {
     notes.push(
       "Injected task workspace helper-only shell policy: use task_workspace.py for workspace reads, searches, lists, and writes.",
@@ -263,7 +266,7 @@ export async function prepareOpenCodeRuntimeConfig(input: {
     ...existingConfig,
     permission: {
       ...mergedPermission,
-      external_directory: "allow",
+      ...(skipPermissions ? { external_directory: "allow" } : {}),
     },
   };
   if (Object.keys(nextProvider).length > 0) {
