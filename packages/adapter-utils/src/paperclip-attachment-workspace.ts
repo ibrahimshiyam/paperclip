@@ -2,6 +2,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 const DEFAULT_MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024;
+const DEFAULT_FETCH_MAX_ATTEMPTS = 25;
+const DEFAULT_RETRY_DELAY_MS = 1_000;
 
 type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 
@@ -258,8 +260,8 @@ export async function materializePaperclipAttachments(
   const taskWorkspaceDir = path.join(workspaceCwd, ".paperclip-work", issueId);
   const attachmentsDir = path.join(taskWorkspaceDir, "attachments");
   const maxAttachmentBytes = options.maxAttachmentBytes ?? DEFAULT_MAX_ATTACHMENT_BYTES;
-  const fetchMaxAttempts = Math.max(1, Math.floor(options.fetchMaxAttempts ?? 6));
-  const retryDelayMs = Math.max(0, Math.floor(options.retryDelayMs ?? 500));
+  const fetchMaxAttempts = Math.max(1, Math.floor(options.fetchMaxAttempts ?? DEFAULT_FETCH_MAX_ATTEMPTS));
+  const retryDelayMs = Math.max(0, Math.floor(options.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS));
   const materialized: MaterializedPaperclipAttachment[] = [];
   const updatedAttachments: Record<string, unknown>[] = [];
   let hasCanonicalPdf = false;
