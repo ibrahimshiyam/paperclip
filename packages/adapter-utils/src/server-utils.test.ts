@@ -879,6 +879,8 @@ describe("renderPaperclipWakePrompt", () => {
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("adapter/runtime status channel as the sanctioned fallback");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Use child issues");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("instead of polling agents, sessions, or processes");
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("use the approved `task_workspace.py` commands");
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Do not use plain shell file commands such as `cat`");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Create child issues directly when you know what needs to be done");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("POST /api/issues/$PAPERCLIP_TASK_ID/interactions");
     // URL paths in prompt text carry real ids or env vars, never brace
@@ -972,6 +974,8 @@ describe("renderPaperclipWakePrompt", () => {
     });
 
     expect(prompt).toContain("## Existing task evidence to reuse");
+    expect(prompt).toContain("Use approved task workspace helper commands such as `task_workspace.py read`");
+    expect(prompt).toContain("do not try plain `cat`");
     expect(prompt).toContain("2002.00388v4.pdf (application/pdf, 2097312 bytes)");
     expect(prompt).toContain("canonical local file: paper.pdf");
     expect(prompt).toContain("local copy: attachments/2002.00388v4.pdf");
