@@ -3787,7 +3787,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const heartbeat = heartbeatService(db);
 
     await heartbeat.resumeQueuedRuns();
-    await waitForRunToSettle(heartbeat, runId, 5_000);
+    await waitForRunToSettle(heartbeat, runId, 15_000);
+    await heartbeat.waitForRunExecutionDrain(runId);
 
     const failedRun = await db
       .select()
