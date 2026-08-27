@@ -214,6 +214,11 @@ describe("managed install commands", () => {
       .rejects.toThrow("unsupported workspace dependency");
   });
 
+  it("includes child-process stdout in command failures", async () => {
+    await expect(runCommandWithDiagnostics(process.execPath, ["-e", "process.stdout.write('workspace build failed\\n'); process.exit(1)"]))
+      .rejects.toThrow("workspace build failed");
+  });
+
   it("installs through the shim, reports provenance, and uninstalls without deleting user data", async () => {
     const version = "2026.720.0";
     const runCommand = vi.fn(async (file: string, args: string[], _options?: unknown) => {

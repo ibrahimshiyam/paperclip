@@ -45,11 +45,17 @@ export async function runCommandWithDiagnostics(
   try {
     return await execFileAsync(file, args, { ...options, encoding: "utf8" });
   } catch (error) {
+    const stdout = error && typeof error === "object" && "stdout" in error && typeof error.stdout === "string"
+      ? error.stdout.trim()
+      : "";
     const stderr = error && typeof error === "object" && "stderr" in error && typeof error.stderr === "string"
       ? error.stderr.trim()
       : "";
-    if (!stderr || (error instanceof Error && error.message.includes(stderr))) throw error;
-    throw new Error(`${error instanceof Error ? error.message : String(error)}\n${stderr}`, { cause: error });
+    const diagnostics = [stdout, stderr]
+      .filter(Boolean)
+      .filter((value) => !(error instanceof Error && error.message.includes(value)));
+    if (diagnostics.length === 0) throw error;
+    throw new Error(`${error instanceof Error ? error.message : String(error)}\n${diagnostics.join("\n")}`, { cause: error });
   }
 }
 
