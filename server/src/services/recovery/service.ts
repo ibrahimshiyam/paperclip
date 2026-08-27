@@ -691,7 +691,7 @@ function isOperatorCancelledRun(latestRun: LatestIssueRun): boolean {
   return result.cancelledByActorType === "user" || result.cancelledByActorType === "board";
 }
 
-function isUnsuccessfulTerminalIssueRun(latestRun: LatestIssueRun) {
+function isUnsuccessfulTerminalIssueRun(latestRun: LatestIssueRun): latestRun is NonNullable<LatestIssueRun> {
   return Boolean(
     latestRun &&
       UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
@@ -1039,6 +1039,31 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           eq(agentWakeupRequests.status, "queued"),
           sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
           agentId ? eq(agentWakeupRequests.agentId, agentId) : sql`true`,
+        ),
+      )
+      .limit(1)
+      .then((rows) => Boolean(rows[0]));
+  }
+
+  async function hasUnboundQueuedIssueWakeAfterRun(
+    companyId: string,
+    issueId: string,
+    latestRun: NonNullable<LatestIssueRun>,
+    agentId?: string | null,
+  ) {
+    const runBeganAt = latestRun.startedAt ?? latestRun.createdAt;
+
+    return db
+      .select({ id: agentWakeupRequests.id })
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, companyId),
+          eq(agentWakeupRequests.status, "queued"),
+          isNull(agentWakeupRequests.runId),
+          sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
+          agentId ? eq(agentWakeupRequests.agentId, agentId) : sql`true`,
+          gte(agentWakeupRequests.requestedAt, runBeganAt),
         ),
       )
       .limit(1)
@@ -4765,6 +4790,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         }
 
         if (didAutomaticRecoveryFail(latestRun, "assignment_recovery")) {
+          if (await hasUnboundQueuedIssueWakeAfterRun(issue.companyId, issue.id, latestRun, agentId)) {
+            result.skipped += 1;
+            continue;
+          }
+
           const updated = await escalateStrandedAssignedIssue({
             issue,
             previousStatus: "todo",
@@ -4963,6 +4993,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         }
 
         if (didAutomaticRecoveryFail(latestRun, "issue_continuation_needed")) {
+          if (await hasUnboundQueuedIssueWakeAfterRun(issue.companyId, issue.id, latestRun, agentId)) {
+            result.skipped += 1;
+            continue;
+          }
+
           const { consecutive, latestFinishedAt } = await summarizeRecentContinuationRetries(
             issue.companyId,
             issue.id,

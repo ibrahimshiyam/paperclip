@@ -6774,6 +6774,38 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     )).toBe(true);
   });
 
+  it("does not block assigned todo work when a newer unstarted wake is already queued", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "todo",
+      runStatus: "cancelled",
+      retryReason: "assignment_recovery",
+      runErrorCode: "process_lost",
+    });
+    await db.insert(agentWakeupRequests).values({
+      companyId,
+      agentId,
+      source: "on_demand",
+      triggerDetail: "system",
+      reason: "uploaded_pdf_handoff_recovery",
+      payload: { issueId },
+      status: "queued",
+      requestedAt: new Date("2026-03-19T00:06:00.000Z"),
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.dispatchRequeued).toBe(0);
+    expect(result.escalated).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(result.issueIds).toEqual([]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("todo");
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(0);
+  });
+
   it("blocks an already stranded recovery issue without creating a recovery child", async () => {
     const { companyId, issueId } = await seedStrandedIssueFixture({
       status: "todo",
@@ -7180,6 +7212,37 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(commentMetadataRows(comments[0]).some((row) =>
       row.type === "key_value" && row.label === "Recovery owner" && row.value === "Board decision required",
     )).toBe(true);
+  });
+
+  it("does not block stranded in-progress work when a newer unstarted wake is already queued", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+    });
+    await db.insert(agentWakeupRequests).values({
+      companyId,
+      agentId,
+      source: "on_demand",
+      triggerDetail: "system",
+      reason: "uploaded_pdf_handoff_recovery",
+      payload: { issueId },
+      status: "queued",
+      requestedAt: new Date("2026-03-19T00:06:00.000Z"),
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(result.issueIds).toEqual([]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(0);
   });
 
   it("redacts error-code-only stranded recovery failures in issue copy", async () => {
