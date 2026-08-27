@@ -124,6 +124,11 @@ import {
 } from "../services/recovery/index.ts";
 import { collectDispositionRepairSourceState } from "../services/recovery/disposition-repair.ts";
 import {
+  REQUIRED_ISSUE_DISPOSITION_ERROR_CODE,
+  REQUIRED_ISSUE_DISPOSITION_NOTICE_BODY,
+  REQUIRED_ISSUE_DISPOSITION_OWNER_WAKE_REASON,
+} from "../services/required-issue-disposition.ts";
+import {
   UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
   UNMANAGED_BACKGROUND_TASK_STOP_REASON,
 } from "@paperclipai/adapter-utils/server-utils";
@@ -3745,6 +3750,95 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .from(activityLog)
       .where(eq(activityLog.entityId, issueId));
     expect(activity.some((event) => event.action === "issue.successful_run_handoff_required")).toBe(true);
+  });
+
+  it("fails closed, blocks the issue, and notifies one configured owner when disposition is mandatory", async () => {
+    const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+    const ownerAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: ownerAgentId,
+      companyId,
+      name: "Research Director",
+      role: "manager",
+      status: "paused",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+    await db
+      .update(agents)
+      .set({
+        adapterConfig: {
+          requireIssueDisposition: true,
+          missingDispositionOwnerAgentId: ownerAgentId,
+        },
+      })
+      .where(eq(agents.id, agentId));
+    mockAdapterExecute.mockResolvedValueOnce({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      errorMessage: null,
+      summary: "Produced an artifact but omitted the required status update.",
+      provider: "test",
+      model: "test-model",
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId, 5_000);
+
+    const failedRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    expect(failedRun).toMatchObject({
+      status: "failed",
+      errorCode: REQUIRED_ISSUE_DISPOSITION_ERROR_CODE,
+    });
+    expect(failedRun?.error).toContain("remained in_progress without a required disposition");
+
+    const blockedIssue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(blockedIssue).toMatchObject({
+      status: "blocked",
+      assigneeAgentId: agentId,
+      unblockDescriptor: {
+        owner: { agentId: ownerAgentId },
+      },
+    });
+    expect(blockedIssue?.executionRunId).toBeNull();
+
+    const worker = await db
+      .select({ status: agents.status, errorReason: agents.errorReason })
+      .from(agents)
+      .where(eq(agents.id, agentId))
+      .then((rows) => rows[0] ?? null);
+    expect(worker).toEqual({ status: "idle", errorReason: null });
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments.filter((comment) => comment.body === REQUIRED_ISSUE_DISPOSITION_NOTICE_BODY)).toHaveLength(1);
+    expect(comments.some((comment) => comment.body === SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY)).toBe(false);
+
+    const wakeups = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
+    expect(wakeups.filter((wakeup) => wakeup.reason === "finish_successful_run_handoff")).toHaveLength(0);
+    const ownerWakeups = wakeups.filter((wakeup) => wakeup.reason === REQUIRED_ISSUE_DISPOSITION_OWNER_WAKE_REASON);
+    expect(ownerWakeups).toHaveLength(1);
+    expect(ownerWakeups[0]).toMatchObject({
+      agentId: ownerAgentId,
+      idempotencyKey: `${REQUIRED_ISSUE_DISPOSITION_OWNER_WAKE_REASON}:${issueId}:${runId}`,
+    });
+
+    const recoveryActions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(recoveryActions).toHaveLength(0);
   });
 
   it("requeues a missing-disposition handoff when the previous corrective wake was cancelled", async () => {

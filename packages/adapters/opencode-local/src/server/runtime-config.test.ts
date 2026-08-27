@@ -337,8 +337,7 @@ describe("prepareOpenCodeRuntimeConfig", () => {
       grep: "deny",
     });
     expect(runtimeConfig.permission?.bash).toMatchObject({
-      "*": "allow",
-      "git status*": "allow",
+      "*": "deny",
       "cat *": "deny",
       "head *": "deny",
       "tail *": "deny",
@@ -362,6 +361,7 @@ describe("prepareOpenCodeRuntimeConfig", () => {
       "python3 task_workspace.py *": "allow",
       "*/task_workspace.py *": "allow",
     });
+    expect(runtimeConfig.permission?.bash).not.toHaveProperty("git status*");
     expect(prepared.notes).toContain(
       "Injected task workspace helper-only shell policy: use task_workspace.py for workspace reads, searches, lists, and writes.",
     );
@@ -411,6 +411,60 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     expect(prepared.notes).toEqual([
       "Injected task workspace helper-only shell policy: use task_workspace.py for workspace reads, searches, lists, and writes.",
     ]);
+    await prepared.cleanup();
+  });
+
+  it("replaces permissive OPENCODE_CONFIG_CONTENT bash rules with the helper-only allowlist", async () => {
+    const configHome = await makeConfigHome();
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: {
+        XDG_CONFIG_HOME: configHome,
+        OPENCODE_CONFIG_CONTENT: JSON.stringify({
+          permission: {
+            bash: {
+              "*": "allow",
+              "curl *": "allow",
+              "jq *": "allow",
+            },
+          },
+        }),
+      },
+      config: { dangerouslySkipPermissions: false },
+      taskWorkspaceCommandPolicy: "helper_only",
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+
+    const content = JSON.parse(prepared.env.OPENCODE_CONFIG_CONTENT) as {
+      permission?: { bash?: Record<string, string> };
+    };
+    expect(content.permission?.bash).toMatchObject({
+      "*": "deny",
+      "task_workspace.py *": "allow",
+      "*/task_workspace.py *": "allow",
+    });
+    expect(content.permission?.bash).not.toHaveProperty("curl *");
+    expect(content.permission?.bash).not.toHaveProperty("jq *");
+    await prepared.cleanup();
+  });
+
+  it("ships the helper-only runtime config to remote execution targets", async () => {
+    const configHome = await makeConfigHome({ permission: { bash: { "curl *": "allow" } } });
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome },
+      config: { dangerouslySkipPermissions: false },
+      targetIsRemote: true,
+      taskWorkspaceCommandPolicy: "helper_only",
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+    const runtimeConfig = JSON.parse(
+      await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
+    ) as { permission?: { bash?: Record<string, string> } };
+
+    expect(runtimeConfig.permission?.bash).toMatchObject({
+      "*": "deny",
+      "task_workspace.py *": "allow",
+    });
+    expect(runtimeConfig.permission?.bash).not.toHaveProperty("curl *");
     await prepared.cleanup();
   });
 

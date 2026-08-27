@@ -128,6 +128,12 @@ import {
   type RunLivenessClassificationInput,
 } from "./run-liveness.js";
 import {
+  REQUIRED_ISSUE_DISPOSITION_ERROR_CODE,
+  REQUIRED_ISSUE_DISPOSITION_NOTICE_BODY,
+  REQUIRED_ISSUE_DISPOSITION_OWNER_WAKE_REASON,
+  decideRequiredIssueDisposition,
+} from "./required-issue-disposition.js";
+import {
   ISSUE_NEW_INPUT_ACTIVITY_ACTIONS,
   ISSUE_PROGRESS_ACTIVITY_ACTIONS,
   ISSUE_REWAKE_LOOKBACK_MS,
@@ -9547,6 +9553,106 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     );
   }
 
+  async function blockIssueForRequiredDispositionViolation(input: {
+    issue: Pick<typeof issues.$inferSelect, "id" | "companyId" | "identifier" | "title">;
+    run: typeof heartbeatRuns.$inferSelect;
+    ownerAgentId: string | null;
+    reason: string;
+  }) {
+    const configuredOwner = input.ownerAgentId
+      ? await db
+        .select({ id: agents.id })
+        .from(agents)
+        .where(and(
+          eq(agents.id, input.ownerAgentId),
+          eq(agents.companyId, input.issue.companyId),
+          notInArray(agents.status, ["terminated"]),
+        ))
+        .limit(1)
+        .then((rows) => rows[0] ?? null)
+      : null;
+    const owner = configuredOwner ? { agentId: configuredOwner.id } as const : "board" as const;
+    const action = configuredOwner
+      ? "Inspect the failed disposition contract, keep this issue blocked or requeue it explicitly, then continue the next eligible task."
+      : "Inspect the failed disposition contract and record an explicit issue status before retrying.";
+
+    const updatedIssue = await issuesSvc.update(input.issue.id, {
+      status: "blocked",
+      unblockDescriptor: { owner, action },
+    });
+    if (!updatedIssue) return;
+
+    await issuesSvc.addComment(
+      input.issue.id,
+      REQUIRED_ISSUE_DISPOSITION_NOTICE_BODY,
+      { runId: input.run.id },
+      {
+        authorType: "system",
+        presentation: {
+          kind: "system_notice",
+          tone: "danger",
+          title: "Required issue disposition missing",
+          detailsDefaultOpen: false,
+        },
+        metadata: {
+          version: 1,
+          sourceRunId: input.run.id,
+          sections: [
+            {
+              title: "Contract failure",
+              rows: [
+                { type: "key_value", label: "Run status", value: "failed" },
+                { type: "key_value", label: "Error code", value: REQUIRED_ISSUE_DISPOSITION_ERROR_CODE },
+                { type: "key_value", label: "Reason", value: input.reason },
+                { type: "key_value", label: "Automatic retry", value: "not queued" },
+              ],
+            },
+          ],
+        },
+      },
+    );
+
+    await logActivity(db, {
+      companyId: input.issue.companyId,
+      actorType: "system",
+      actorId: "heartbeat",
+      agentId: input.run.agentId,
+      runId: input.run.id,
+      action: "issue.required_disposition_contract_failed",
+      entityType: "issue",
+      entityId: input.issue.id,
+      details: {
+        errorCode: REQUIRED_ISSUE_DISPOSITION_ERROR_CODE,
+        ownerAgentId: configuredOwner?.id ?? null,
+        issue: issueUiLink(input.issue),
+      },
+    });
+
+    if (configuredOwner) {
+      await enqueueWakeup(configuredOwner.id, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: REQUIRED_ISSUE_DISPOSITION_OWNER_WAKE_REASON,
+        payload: {
+          issueId: input.issue.id,
+          taskId: input.issue.id,
+          sourceRunId: input.run.id,
+          instruction: action,
+        },
+        contextSnapshot: {
+          issueId: input.issue.id,
+          taskId: input.issue.id,
+          sourceRunId: input.run.id,
+          wakeReason: REQUIRED_ISSUE_DISPOSITION_OWNER_WAKE_REASON,
+          instruction: action,
+        },
+        idempotencyKey: `${REQUIRED_ISSUE_DISPOSITION_OWNER_WAKE_REASON}:${input.issue.id}:${input.run.id}`,
+        requestedByActorType: "system",
+        requestedByActorId: "heartbeat",
+      });
+    }
+  }
+
   async function handleSuccessfulRunHandoff(run: typeof heartbeatRuns.$inferSelect, agent: typeof agents.$inferSelect) {
     if (run.status !== "succeeded") return;
     const context = parseObject(run.contextSnapshot);
@@ -16588,6 +16694,45 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         outcome = "failed";
       }
 
+      let requiredIssueDispositionViolation: {
+        issue: Pick<typeof issues.$inferSelect, "id" | "companyId" | "identifier" | "title">;
+        ownerAgentId: string | null;
+        reason: string;
+      } | null = null;
+      if (
+        outcome === "succeeded" &&
+        asBoolean(mergedConfig.requireIssueDisposition, false) &&
+        issueId
+      ) {
+        const dispositionIssue = await db
+          .select({
+            id: issues.id,
+            companyId: issues.companyId,
+            identifier: issues.identifier,
+            title: issues.title,
+            status: issues.status,
+            assigneeAgentId: issues.assigneeAgentId,
+            assigneeUserId: issues.assigneeUserId,
+          })
+          .from(issues)
+          .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
+          .then((rows) => rows[0] ?? null);
+        const dispositionDecision = decideRequiredIssueDisposition({
+          enabled: true,
+          issueId,
+          runAgentId: agent.id,
+          issue: dispositionIssue,
+        });
+        if (dispositionDecision.kind === "violation" && dispositionIssue) {
+          outcome = "failed";
+          requiredIssueDispositionViolation = {
+            issue: dispositionIssue,
+            ownerAgentId: readNonEmptyString(mergedConfig.missingDispositionOwnerAgentId),
+            reason: dispositionDecision.reason,
+          };
+        }
+      }
+
       const nextSessionState = resolveNextSessionState({
         adapterType: agent.adapterType,
         codec: sessionCodec,
@@ -16607,7 +16752,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       });
       const normalizedUsage = sessionUsageResolution.normalizedUsage;
       const runErrorMessage =
-        outcome === "cancelled"
+        requiredIssueDispositionViolation
+          ? "Paperclip rejected the successful process exit because the assigned issue remained in_progress without a required disposition."
+          : outcome === "cancelled"
           ? (latestRun?.error ?? adapterResult.errorMessage ?? "Cancelled")
           : outcome === "succeeded"
             ? null
@@ -16618,7 +16765,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const recordedResponsibleUserDenialCode =
         normalizeResponsibleUserDenialCode(latestRun?.errorCode);
       const runErrorCode =
-        outcome === "timed_out"
+        requiredIssueDispositionViolation
+          ? REQUIRED_ISSUE_DISPOSITION_ERROR_CODE
+          : outcome === "timed_out"
           ? "timeout"
           : outcome === "cancelled"
             ? (latestRun?.errorCode ?? "cancelled")
@@ -16755,6 +16904,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       let persistedRun = persistedRunWrite.run;
       if (persistedRun) {
         persistedRun = await classifyAndPersistRunLiveness(persistedRun, persistedResultJson) ?? persistedRun;
+      }
+
+      if (requiredIssueDispositionViolation && persistedRun) {
+        await blockIssueForRequiredDispositionViolation({
+          ...requiredIssueDispositionViolation,
+          run: persistedRun,
+        });
       }
 
       await setWakeupStatus(run.wakeupRequestId, outcome === "succeeded" ? "completed" : status, {
@@ -16913,7 +17069,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         {
           keepIdleOnFailure:
             outcome === "failed" &&
-            ((finalizedRun ? readHeartbeatRunErrorFamily(finalizedRun) === "provider_quota" : runErrorCode === "provider_quota") ||
+            (runErrorCode === REQUIRED_ISSUE_DISPOSITION_ERROR_CODE ||
+              (finalizedRun ? readHeartbeatRunErrorFamily(finalizedRun) === "provider_quota" : runErrorCode === "provider_quota") ||
               isWorkspaceSyncConflictFailure(adapterResult.errorMessage)),
           wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
         },

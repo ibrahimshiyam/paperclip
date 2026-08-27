@@ -118,7 +118,9 @@ Core fields:
 - model (string, required): OpenCode model id in provider/model format (for example anthropic/claude-sonnet-4-5)
 - variant (string, optional): provider-specific reasoning/profile variant passed as --variant (for example minimal|low|medium|high|xhigh|max)
 - dangerouslySkipPermissions (boolean, optional): inject a runtime OpenCode config that allows \`external_directory\` access without interactive prompts; defaults to true for unattended Paperclip runs
-- taskWorkspaceCommandPolicy (string, optional): use \`helper_only\` to allow the Paperclip task workspace helper while denying plain shell file reads/searches/lists/writes; defaults to \`auto\`, which enables this for task runs that include a workspace artifact inventory
+- taskWorkspaceCommandPolicy (string, optional): use \`helper_only\` for a deny-by-default shell policy that permits only the Paperclip task workspace helper; defaults to \`auto\`, which enables this for task runs that include a workspace artifact inventory
+- requireIssueDisposition (boolean, optional): fail the run and block its issue when the process exits successfully while its assigned issue is still \`in_progress\`
+- missingDispositionOwnerAgentId (string, optional): agent to notify after a required-disposition contract failure; the issue remains blocked and no corrective worker retry is queued
 - promptTemplate (string, optional): run prompt template
 - command (string, optional): defaults to "opencode"
 - extraArgs (string[], optional): additional CLI args
@@ -142,4 +144,6 @@ Notes:
   not stall on approval prompts.
 - For restricted Paperclip task workspaces, agents must use \
   \`task_workspace.py read/search/list/write\` instead of shell file commands.
+- The \`helper_only\` policy replaces inherited bash permissions, including broad \
+  \`*\`, \`curl\`, and \`jq\` allowances, and is shipped to remote execution targets.
 `;

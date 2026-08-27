@@ -12,6 +12,7 @@ type PreparedOpenCodeRuntimeConfig = {
 export type OpenCodeTaskWorkspaceCommandPolicy = "default" | "helper_only";
 
 const TASK_WORKSPACE_HELPER_ONLY_BASH_PERMISSION_RULES: [string, string][] = [
+  ["*", "deny"],
   ["cat *", "deny"],
   ["head *", "deny"],
   ["tail *", "deny"],
@@ -53,8 +54,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 function mergeTaskWorkspaceHelperOnlyPermissions(
   existingPermission: Record<string, unknown>,
 ): Record<string, unknown> {
-  const existingBash = isPlainObject(existingPermission.bash) ? existingPermission.bash : {};
-  const bash: Record<string, unknown> = { ...existingBash };
+  const bash: Record<string, unknown> = {};
   for (const [pattern, permission] of TASK_WORKSPACE_HELPER_ONLY_BASH_PERMISSION_RULES) {
     bash[pattern] = permission;
   }
@@ -65,6 +65,30 @@ function mergeTaskWorkspaceHelperOnlyPermissions(
     glob: "deny",
     grep: "deny",
     bash,
+  };
+}
+
+function applyTaskWorkspaceHelperOnlyPolicyToConfigContent(
+  env: Record<string, string>,
+): Record<string, string> {
+  const raw = env.OPENCODE_CONFIG_CONTENT;
+  if (typeof raw !== "string" || raw.trim().length === 0) return env;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return env;
+  }
+  if (!isPlainObject(parsed)) return env;
+
+  const existingPermission = isPlainObject(parsed.permission) ? parsed.permission : {};
+  return {
+    ...env,
+    OPENCODE_CONFIG_CONTENT: JSON.stringify({
+      ...parsed,
+      permission: mergeTaskWorkspaceHelperOnlyPermissions(existingPermission),
+    }),
   };
 }
 
@@ -158,19 +182,6 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   const skipPermissions = asBoolean(input.config.dangerouslySkipPermissions, true);
   const taskWorkspaceCommandPolicy = input.taskWorkspaceCommandPolicy ?? "default";
   if (!skipPermissions && taskWorkspaceCommandPolicy !== "helper_only") {
-    return {
-      env: input.env,
-      notes: [],
-      cleanup: async () => {},
-    };
-  }
-
-  // For remote execution targets the host XDG_CONFIG_HOME path is meaningless
-  // (and actively harmful — it leaks a macOS-only path into the remote Linux
-  // env). Callers that need to ship a runtime opencode config to the remote
-  // box do that via prepareAdapterExecutionTargetRuntime in execute.ts; this
-  // host-fs helper is local-only.
-  if (input.targetIsRemote) {
     return {
       env: input.env,
       notes: [],
@@ -290,9 +301,13 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   }
   await fs.writeFile(runtimeConfigPath, `${JSON.stringify(nextConfig, null, 2)}\n`, "utf8");
 
+  const nextEnv = taskWorkspaceCommandPolicy === "helper_only"
+    ? applyTaskWorkspaceHelperOnlyPolicyToConfigContent(input.env)
+    : input.env;
+
   return {
     env: {
-      ...input.env,
+      ...nextEnv,
       XDG_CONFIG_HOME: runtimeConfigHome,
     },
     notes,
