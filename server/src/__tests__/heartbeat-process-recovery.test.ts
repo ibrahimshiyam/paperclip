@@ -3760,7 +3760,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       companyId,
       name: "Research Director",
       role: "manager",
-      status: "paused",
+      status: "idle",
       adapterType: "codex_local",
       adapterConfig: {},
       runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },

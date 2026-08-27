@@ -9629,27 +9629,39 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
 
     if (configuredOwner) {
-      await enqueueWakeup(configuredOwner.id, {
-        source: "automation",
-        triggerDetail: "system",
-        reason: REQUIRED_ISSUE_DISPOSITION_OWNER_WAKE_REASON,
-        payload: {
-          issueId: input.issue.id,
-          taskId: input.issue.id,
-          sourceRunId: input.run.id,
-          instruction: action,
-        },
-        contextSnapshot: {
-          issueId: input.issue.id,
-          taskId: input.issue.id,
-          sourceRunId: input.run.id,
-          wakeReason: REQUIRED_ISSUE_DISPOSITION_OWNER_WAKE_REASON,
-          instruction: action,
-        },
-        idempotencyKey: `${REQUIRED_ISSUE_DISPOSITION_OWNER_WAKE_REASON}:${input.issue.id}:${input.run.id}`,
-        requestedByActorType: "system",
-        requestedByActorId: "heartbeat",
-      });
+      try {
+        await enqueueWakeup(configuredOwner.id, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: REQUIRED_ISSUE_DISPOSITION_OWNER_WAKE_REASON,
+          payload: {
+            issueId: input.issue.id,
+            taskId: input.issue.id,
+            sourceRunId: input.run.id,
+            instruction: action,
+          },
+          contextSnapshot: {
+            issueId: input.issue.id,
+            taskId: input.issue.id,
+            sourceRunId: input.run.id,
+            wakeReason: REQUIRED_ISSUE_DISPOSITION_OWNER_WAKE_REASON,
+            instruction: action,
+          },
+          idempotencyKey: `${REQUIRED_ISSUE_DISPOSITION_OWNER_WAKE_REASON}:${input.issue.id}:${input.run.id}`,
+          requestedByActorType: "system",
+          requestedByActorId: "heartbeat",
+        });
+      } catch (error) {
+        logger.warn(
+          {
+            err: error,
+            issueId: input.issue.id,
+            runId: input.run.id,
+            ownerAgentId: configuredOwner.id,
+          },
+          "required issue disposition failed to notify configured owner after durable block",
+        );
+      }
     }
   }
 
