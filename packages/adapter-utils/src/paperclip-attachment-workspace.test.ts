@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { materializePaperclipPdfAttachments } from "./paperclip-attachment-workspace.js";
+import { materializePaperclipAttachments, materializePaperclipPdfAttachments } from "./paperclip-attachment-workspace.js";
 import { renderPaperclipWakePrompt, stringifyPaperclipWakePayload } from "./server-utils.js";
 
 const tempDirs: string[] = [];
@@ -24,7 +24,11 @@ function pdfBytes(text = "fixture") {
   return new TextEncoder().encode(`%PDF-1.7\n% ${text}\n%%EOF\n`);
 }
 
-describe("materializePaperclipPdfAttachments", () => {
+function docxBytes() {
+  return new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0x63, 0x76]);
+}
+
+describe("materializePaperclipAttachments", () => {
   it("turns an uploaded Paperclip PDF attachment into canonical local files before prompt render", async () => {
     const workspace = await makeWorkspace();
     const uploadedPdf = pdfBytes("aca-46");
@@ -92,6 +96,7 @@ describe("materializePaperclipPdfAttachments", () => {
         localPath: "attachments/official_paper.pdf",
         canonicalLocalPath: "paper.pdf",
         byteSize: uploadedPdf.byteLength,
+        kind: "pdf",
       },
     ]);
 
@@ -104,7 +109,71 @@ describe("materializePaperclipPdfAttachments", () => {
     expect(prompt).not.toContain("download it from its content path");
   });
 
-  it("does not fetch or alter wake context when no uploaded PDF attachment exists", async () => {
+  it("turns an uploaded CV DOCX attachment into a local file before prompt render", async () => {
+    const workspace = await makeWorkspace();
+    const uploadedDocx = docxBytes();
+    const fetchImpl = vi.fn(async () =>
+      new Response(uploadedDocx, {
+        status: 200,
+        headers: { "content-type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document" },
+      })
+    );
+
+    const context = {
+      taskId: "issue-per-3",
+      paperclipWake: {
+        reason: "issue_reopened_via_comment",
+        issue: { id: "issue-per-3", identifier: "PER-3", title: "Migrate and Verify Remote Tech Roles History" },
+        artifactInventory: {
+          counts: { documents: 0, workProducts: 0, attachments: 1 },
+          documents: [],
+          workProducts: [],
+          attachments: [
+            {
+              id: "attachment-cv",
+              filename: "CV-Dr_Ibrahim_Shiyam.docx",
+              contentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+              byteSize: uploadedDocx.byteLength,
+              contentPath: "/api/attachments/attachment-cv/content",
+              downloadPath: "/api/attachments/attachment-cv/content?download=1",
+            },
+          ],
+        },
+      },
+    };
+
+    const result = await materializePaperclipAttachments({
+      context,
+      workspaceCwd: workspace,
+      apiBaseUrl: "https://paperclip.example/api",
+      apiKey: "run-token",
+      runId: "run-per-3",
+      fetchImpl,
+    });
+
+    await expect(fs.readFile(path.join(workspace, ".paperclip-work", "issue-per-3", "cv.docx")))
+      .resolves.toEqual(Buffer.from(uploadedDocx));
+    await expect(fs.readFile(path.join(workspace, ".paperclip-work", "issue-per-3", "attachments", "CV-Dr_Ibrahim_Shiyam.docx")))
+      .resolves.toEqual(Buffer.from(uploadedDocx));
+    expect(result.materialized).toEqual([
+      {
+        id: "attachment-cv",
+        filename: "CV-Dr_Ibrahim_Shiyam.docx",
+        localPath: "attachments/CV-Dr_Ibrahim_Shiyam.docx",
+        canonicalLocalPath: "cv.docx",
+        byteSize: uploadedDocx.byteLength,
+        kind: "docx",
+      },
+    ]);
+
+    const prompt = renderPaperclipWakePrompt(result.context.paperclipWake);
+    expect(prompt).toContain("canonical local file: cv.docx");
+    expect(prompt).toContain("local copy: attachments/CV-Dr_Ibrahim_Shiyam.docx");
+    expect(prompt).toContain("unzip/read it locally instead of asking the user to paste or reupload it");
+    expect(prompt).not.toContain("download it from its content path");
+  });
+
+  it("does not fetch or alter wake context when no uploaded attachment exists", async () => {
     const workspace = await makeWorkspace();
     const fetchImpl = vi.fn();
     const context = {

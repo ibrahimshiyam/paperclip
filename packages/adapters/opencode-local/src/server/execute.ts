@@ -48,7 +48,7 @@ import {
   readPaperclipIssueWorkModeFromContext,
   resolvePaperclipDesiredSkillNames,
 } from "@paperclipai/adapter-utils/server-utils";
-import { materializePaperclipPdfAttachments } from "@paperclipai/adapter-utils/paperclip-attachment-workspace";
+import { materializePaperclipAttachments } from "@paperclipai/adapter-utils/paperclip-attachment-workspace";
 import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl } from "./parse.js";
 import {
   ensureOpenCodeModelConfiguredAndAvailable,
@@ -303,7 +303,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }
-  const materializedPdfAttachments = await materializePaperclipPdfAttachments({
+  const materializedAttachments = await materializePaperclipAttachments({
     context,
     workspaceCwd: cwd,
     apiBaseUrl: env.PAPERCLIP_API_URL,
@@ -311,8 +311,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     runId,
     onLog,
   });
-  if (materializedPdfAttachments.context !== context) {
-    Object.assign(context, materializedPdfAttachments.context);
+  if (materializedAttachments.context !== context) {
+    Object.assign(context, materializedAttachments.context);
   }
   const wakePayloadJson = stringifyPaperclipWakePayload(context.paperclipWake);
   if (wakePayloadJson) env.PAPERCLIP_WAKE_PAYLOAD_JSON = wakePayloadJson;

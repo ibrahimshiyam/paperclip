@@ -71,7 +71,7 @@ import {
   stringifyPaperclipWakePayload,
   type PaperclipSkillEntry,
 } from "@paperclipai/adapter-utils/server-utils";
-import { materializePaperclipPdfAttachments } from "../paperclip-attachment-workspace.js";
+import { materializePaperclipAttachments } from "../paperclip-attachment-workspace.js";
 import { shellQuote } from "@paperclipai/adapter-utils/ssh";
 import {
   createAcpRuntime,
@@ -1746,7 +1746,7 @@ async function buildRuntime(input: {
     workspaceWorktreePath: shapedWorkspaceEnv.workspaceWorktreePath,
     agentHome,
   });
-  const materializedPdfAttachments = await materializePaperclipPdfAttachments({
+  const materializedAttachments = await materializePaperclipAttachments({
     context,
     workspaceCwd: cwd,
     apiBaseUrl: env.PAPERCLIP_API_URL,
@@ -1754,8 +1754,8 @@ async function buildRuntime(input: {
     runId,
     onLog: input.ctx.onLog,
   });
-  if (materializedPdfAttachments.context !== context) {
-    Object.assign(context, materializedPdfAttachments.context);
+  if (materializedAttachments.context !== context) {
+    Object.assign(context, materializedAttachments.context);
   }
   const wakePayloadJson = stringifyPaperclipWakePayload(context.paperclipWake);
   if (wakePayloadJson) env.PAPERCLIP_WAKE_PAYLOAD_JSON = wakePayloadJson;

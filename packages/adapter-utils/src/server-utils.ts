@@ -1790,7 +1790,14 @@ export function renderPaperclipWakePrompt(
         if (attachment.contentPath) lines.push(`  authenticated content path: ${attachment.contentPath}`);
         if (attachment.downloadPath) lines.push(`  authenticated download path: ${attachment.downloadPath}`);
         if (attachment.canonicalLocalPath || attachment.localPath) {
-          lines.push("  use the local file above; do not pass the authenticated API path to fetch-pdf.");
+          const localPath = attachment.canonicalLocalPath ?? attachment.localPath ?? "";
+          if (/\.pdf$/i.test(localPath)) {
+            lines.push("  use the local PDF above; do not pass the authenticated API path to fetch-pdf.");
+          } else if (/\.docx$/i.test(localPath)) {
+            lines.push("  use the local DOCX above; unzip/read it locally instead of asking the user to paste or reupload it.");
+          } else {
+            lines.push("  use the local file above; do not pass the authenticated API path to source-fetch helpers.");
+          }
         }
       }
     }
