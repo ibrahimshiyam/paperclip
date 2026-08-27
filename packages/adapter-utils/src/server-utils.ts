@@ -713,6 +713,8 @@ type PaperclipWakeArtifactInventory = {
     createdByAgentId: string | null;
     contentPath: string | null;
     downloadPath: string | null;
+    localPath: string | null;
+    canonicalLocalPath: string | null;
     updatedAt: string | null;
   }>;
   counts: {
@@ -827,6 +829,8 @@ function normalizePaperclipWakeArtifactInventory(value: unknown): PaperclipWakeA
             createdByAgentId: normalizeRecoveryArtifactText(row.createdByAgentId),
             contentPath,
             downloadPath: normalizeRecoveryArtifactText(row.downloadPath),
+            localPath: normalizeRecoveryArtifactText(row.localPath),
+            canonicalLocalPath: normalizeRecoveryArtifactText(row.canonicalLocalPath),
             updatedAt: normalizeRecoveryArtifactText(row.updatedAt),
           };
         })
@@ -1779,8 +1783,15 @@ export function renderPaperclipWakePrompt(
           attachment.createdByAgentId ? `agent ${attachment.createdByAgentId}` : null,
         ].filter(Boolean).join(", ");
         lines.push(`- ${label}${details ? ` (${details})` : ""}`);
-        if (attachment.contentPath) lines.push(`  content: ${attachment.contentPath}`);
-        if (attachment.downloadPath) lines.push(`  download: ${attachment.downloadPath}`);
+        if (attachment.canonicalLocalPath) {
+          lines.push(`  canonical local file: ${attachment.canonicalLocalPath}`);
+        }
+        if (attachment.localPath) lines.push(`  local copy: ${attachment.localPath}`);
+        if (attachment.contentPath) lines.push(`  authenticated content path: ${attachment.contentPath}`);
+        if (attachment.downloadPath) lines.push(`  authenticated download path: ${attachment.downloadPath}`);
+        if (attachment.canonicalLocalPath || attachment.localPath) {
+          lines.push("  use the local file above; do not pass the authenticated API path to fetch-pdf.");
+        }
       }
     }
     if (artifactInventory.documents.length > 0) {

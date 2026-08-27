@@ -71,6 +71,7 @@ import {
   stringifyPaperclipWakePayload,
   type PaperclipSkillEntry,
 } from "@paperclipai/adapter-utils/server-utils";
+import { materializePaperclipPdfAttachments } from "../paperclip-attachment-workspace.js";
 import { shellQuote } from "@paperclipai/adapter-utils/ssh";
 import {
   createAcpRuntime,
@@ -1725,7 +1726,6 @@ async function buildRuntime(input: {
   const linkedIssueIds = Array.isArray(context.issueIds)
     ? context.issueIds.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
     : [];
-  const wakePayloadJson = stringifyPaperclipWakePayload(context.paperclipWake);
   const issueWorkMode = readPaperclipIssueWorkModeFromContext(context);
   if (wakeTaskId) env.PAPERCLIP_TASK_ID = wakeTaskId;
   if (issueWorkMode) env.PAPERCLIP_ISSUE_WORK_MODE = issueWorkMode;
@@ -1734,7 +1734,7 @@ async function buildRuntime(input: {
   if (approvalId) env.PAPERCLIP_APPROVAL_ID = approvalId;
   if (approvalStatus) env.PAPERCLIP_APPROVAL_STATUS = approvalStatus;
   if (linkedIssueIds.length > 0) env.PAPERCLIP_LINKED_ISSUE_IDS = linkedIssueIds.join(",");
-  if (wakePayloadJson) env.PAPERCLIP_WAKE_PAYLOAD_JSON = wakePayloadJson;
+  if (authToken) env.PAPERCLIP_API_KEY = authToken;
   applyPaperclipWorkspaceEnv(env, {
     workspaceCwd: shapedWorkspaceEnv.workspaceCwd,
     workspaceSource,
@@ -1746,6 +1746,19 @@ async function buildRuntime(input: {
     workspaceWorktreePath: shapedWorkspaceEnv.workspaceWorktreePath,
     agentHome,
   });
+  const materializedPdfAttachments = await materializePaperclipPdfAttachments({
+    context,
+    workspaceCwd: cwd,
+    apiBaseUrl: env.PAPERCLIP_API_URL,
+    apiKey: env.PAPERCLIP_API_KEY,
+    runId,
+    onLog: input.ctx.onLog,
+  });
+  if (materializedPdfAttachments.context !== context) {
+    Object.assign(context, materializedPdfAttachments.context);
+  }
+  const wakePayloadJson = stringifyPaperclipWakePayload(context.paperclipWake);
+  if (wakePayloadJson) env.PAPERCLIP_WAKE_PAYLOAD_JSON = wakePayloadJson;
   const shapedEnvConfig = rewriteWorkspaceCwdEnvVarsForExecution({
     env: envConfig,
     workspaceCwd: effectiveWorkspaceCwd,
@@ -1773,7 +1786,6 @@ async function buildRuntime(input: {
     env[key] = value;
     resolvedAdapterEnv[key] = value;
   }
-  if (authToken) env.PAPERCLIP_API_KEY = authToken;
   // For the claude agent, set model via ANTHROPIC_MODEL at startup rather than
   // via session/set_config_option — the ACP server's set_config_option handler
   // validates the value against its internal available-models list and rejects

@@ -5698,7 +5698,7 @@ async function buildTaskArtifactInventory(db: Db, companyId: string, issueId: st
   return {
     instruction:
       "Before source retrieval or paywall workarounds, inspect and reuse these existing task artifacts. " +
-      "An uploaded PDF attachment is the canonical local full-text input for literature/deep-read work; download it from its content path into the workspace and do not invoke fetch-pdf or re-download from a URL while it is available. " +
+      "An uploaded PDF attachment is the canonical full-text input for literature/deep-read work; the runtime must provide it as a local workspace file before the agent starts. Use that local file and do not invoke fetch-pdf or re-download from a URL while it is available. " +
       "A link-only source remains a source candidate and needs transparent verification/failure handling. " +
       "Do not re-download or re-extract material already represented by extracted documents or work products. " +
       "Persist extraction state as a document or work product summary with document identity, extraction completeness, page coverage, evidence rows, and next gates before ending the run. " +

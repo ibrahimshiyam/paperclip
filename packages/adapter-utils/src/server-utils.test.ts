@@ -915,7 +915,7 @@ describe("renderPaperclipWakePrompt", () => {
       artifactInventory: {
         instruction:
           "Before source retrieval or paywall workarounds, inspect and reuse these existing task artifacts. " +
-          "An uploaded PDF attachment is the canonical local full-text input for literature/deep-read work; download it from its content path into the workspace and do not invoke fetch-pdf or re-download from a URL while it is available. " +
+          "An uploaded PDF attachment is the canonical full-text input for literature/deep-read work; the runtime must provide it as a local workspace file before the agent starts. Use that local file and do not invoke fetch-pdf or re-download from a URL while it is available. " +
           "A link-only source remains a source candidate and needs transparent verification/failure handling. " +
           "Do not re-download or re-extract material already represented by extracted documents or work products. " +
           "Persist extraction state as a document or work product summary with document identity, extraction completeness, page coverage, evidence rows, and next gates before ending the run. " +
@@ -931,6 +931,8 @@ describe("renderPaperclipWakePrompt", () => {
             createdByAgentId: null,
             contentPath: "/api/attachments/b8394ae9-d898-4358-8666-a983792c0007/content",
             downloadPath: "/api/attachments/b8394ae9-d898-4358-8666-a983792c0007/content?download=1",
+            localPath: "attachments/2002.00388v4.pdf",
+            canonicalLocalPath: "paper.pdf",
             updatedAt: "2026-08-26T15:03:15.345Z",
           },
         ],
@@ -971,8 +973,12 @@ describe("renderPaperclipWakePrompt", () => {
 
     expect(prompt).toContain("## Existing task evidence to reuse");
     expect(prompt).toContain("2002.00388v4.pdf (application/pdf, 2097312 bytes)");
+    expect(prompt).toContain("canonical local file: paper.pdf");
+    expect(prompt).toContain("local copy: attachments/2002.00388v4.pdf");
     expect(prompt).toContain("/api/attachments/b8394ae9-d898-4358-8666-a983792c0007/content");
+    expect(prompt).toContain("do not pass the authenticated API path to fetch-pdf");
     expect(prompt).toContain("do not invoke fetch-pdf");
+    expect(prompt).not.toContain("download it from its content path");
     expect(prompt).toContain("link-only source remains a source candidate");
     expect(prompt).toContain("Do not re-download or re-extract");
     expect(prompt).toContain("page coverage 1-20");

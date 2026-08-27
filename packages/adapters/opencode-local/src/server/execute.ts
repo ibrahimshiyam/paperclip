@@ -48,6 +48,7 @@ import {
   readPaperclipIssueWorkModeFromContext,
   resolvePaperclipDesiredSkillNames,
 } from "@paperclipai/adapter-utils/server-utils";
+import { materializePaperclipPdfAttachments } from "@paperclipai/adapter-utils/paperclip-attachment-workspace";
 import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl } from "./parse.js";
 import {
   ensureOpenCodeModelConfiguredAndAvailable,
@@ -291,7 +292,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const linkedIssueIds = Array.isArray(context.issueIds)
     ? context.issueIds.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
     : [];
-  const wakePayloadJson = stringifyPaperclipWakePayload(context.paperclipWake);
   const issueWorkMode = readPaperclipIssueWorkModeFromContext(context);
   if (wakeTaskId) env.PAPERCLIP_TASK_ID = wakeTaskId;
   if (issueWorkMode) env.PAPERCLIP_ISSUE_WORK_MODE = issueWorkMode;
@@ -300,6 +300,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (approvalId) env.PAPERCLIP_APPROVAL_ID = approvalId;
   if (approvalStatus) env.PAPERCLIP_APPROVAL_STATUS = approvalStatus;
   if (linkedIssueIds.length > 0) env.PAPERCLIP_LINKED_ISSUE_IDS = linkedIssueIds.join(",");
+  if (authToken) {
+    env.PAPERCLIP_API_KEY = authToken;
+  }
+  const materializedPdfAttachments = await materializePaperclipPdfAttachments({
+    context,
+    workspaceCwd: cwd,
+    apiBaseUrl: env.PAPERCLIP_API_URL,
+    apiKey: env.PAPERCLIP_API_KEY,
+    runId,
+    onLog,
+  });
+  if (materializedPdfAttachments.context !== context) {
+    Object.assign(context, materializedPdfAttachments.context);
+  }
+  const wakePayloadJson = stringifyPaperclipWakePayload(context.paperclipWake);
   if (wakePayloadJson) env.PAPERCLIP_WAKE_PAYLOAD_JSON = wakePayloadJson;
   refreshPaperclipWorkspaceEnvForExecution({
     env,
@@ -319,9 +334,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // selection is already handled via the --model CLI flag.  Set after the
   // envConfig loop so user overrides cannot disable this guard.
   env.OPENCODE_DISABLE_PROJECT_CONFIG = "true";
-  if (authToken) {
-    env.PAPERCLIP_API_KEY = authToken;
-  }
   const preparedRuntimeConfig = await prepareOpenCodeRuntimeConfig({ env, config });
   const localRuntimeConfigHome =
     preparedRuntimeConfig.notes.length > 0 ? preparedRuntimeConfig.env.XDG_CONFIG_HOME : "";
