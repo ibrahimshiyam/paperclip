@@ -3919,9 +3919,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId)));
     expect(runs).toHaveLength(2);
     expect(runs.some((run) => run.errorCode === REQUIRED_ISSUE_DISPOSITION_ERROR_CODE)).toBe(true);
-    expect(runs.some((run) => (
-      run.contextSnapshot as Record<string, unknown> | null
-    )?.retryReason === "issue_continuation_needed")).toBe(true);
+    expect(runs.some((run) => {
+      const context = run.contextSnapshot as Record<string, unknown> | null;
+      return context?.retryReason === "issue_continuation_needed" &&
+        context?.recoveryCause === "successful_run_missing_issue_disposition";
+    })).toBe(true);
 
     const retainedTaskSessions = await db
       .select()

@@ -18091,6 +18091,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         taskKey: issue.id,
         wakeReason: recoveryReason,
         retryReason,
+        ...(run.errorCode === REQUIRED_ISSUE_DISPOSITION_ERROR_CODE
+          ? { recoveryCause: "successful_run_missing_issue_disposition" }
+          : {}),
         source: recoverySource,
         retryOfRunId: run.id,
       }, "normal_model");
