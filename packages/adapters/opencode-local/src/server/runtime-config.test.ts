@@ -416,6 +416,33 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     await prepared.cleanup();
   });
 
+  it("limits missing-disposition recovery to summary, comment, and status helpers", async () => {
+    const configHome = await makeConfigHome({ permission: { bash: { "*": "allow" } } });
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome },
+      config: { dangerouslySkipPermissions: false },
+      taskWorkspaceCommandPolicy: "disposition_only",
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+    const runtimeConfig = JSON.parse(
+      await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
+    ) as { permission?: { bash?: Record<string, string>; task?: string } };
+
+    expect(runtimeConfig.permission?.task).toBe("deny");
+    expect(runtimeConfig.permission?.bash).toMatchObject({
+      "*": "deny",
+      "*/task_workspace.py issue-summary": "allow",
+      "*/task_workspace.py add-comment *": "allow",
+      "*/task_workspace.py set-status *": "allow",
+    });
+    expect(runtimeConfig.permission?.bash).not.toHaveProperty("*/task_workspace.py read *");
+    expect(runtimeConfig.permission?.bash).not.toHaveProperty("*/task_workspace.py validate *");
+    expect(prepared.notes).toEqual([
+      "Injected task disposition-only shell policy: use task_workspace.py only for issue-summary, add-comment, and set-status.",
+    ]);
+    await prepared.cleanup();
+  });
+
   it("replaces permissive OPENCODE_CONFIG_CONTENT bash rules with the helper-only allowlist", async () => {
     const configHome = await makeConfigHome();
     const prepared = await prepareOpenCodeRuntimeConfig({

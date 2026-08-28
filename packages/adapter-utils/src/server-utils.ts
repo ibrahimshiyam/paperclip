@@ -1651,7 +1651,7 @@ export function renderPaperclipWakePrompt(
         return `Your previous run on this issue was lost (${recovery.failureSummary ?? "no failure summary available"}). Try again — resume from durable progress; don't redo completed steps. Do not narrate the recovery in your next comment — at most one short sentence; lead with the work.`;
       case "successful_run_missing_state":
       case "successful_run_missing_issue_disposition":
-        return "Your run completed but left no final disposition. Post a comment summarizing the state and set the correct disposition (`done` / `in_review` / `blocked` / `in_progress` with a live path). Do not start new work.";
+        return "Your run completed but left no final disposition. Inspect the issue summary, post one concise state comment, and set the correct disposition. Use `done` only for completed work, `in_review` only with a real review path, `blocked` only for a genuine external blocker, or `todo` when work remains but no process is live. Do not start or continue deliverable work.";
       case "provider_quota":
         return "Verify or create the wait-recovery monitor for the provider quota reset, then stop. Do not take over the task.";
       case "codex_output_inactivity_monitor":

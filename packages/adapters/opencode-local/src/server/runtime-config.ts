@@ -9,7 +9,7 @@ type PreparedOpenCodeRuntimeConfig = {
   cleanup: () => Promise<void>;
 };
 
-export type OpenCodeTaskWorkspaceCommandPolicy = "default" | "helper_only";
+export type OpenCodeTaskWorkspaceCommandPolicy = "default" | "helper_only" | "disposition_only";
 
 const TASK_WORKSPACE_HELPER_ONLY_BASH_PERMISSION_RULES: [string, string][] = [
   ["*", "deny"],
@@ -39,6 +39,28 @@ const TASK_WORKSPACE_HELPER_ONLY_BASH_PERMISSION_RULES: [string, string][] = [
   ["python3 */task_workspace.py *", "allow"],
 ];
 
+const TASK_WORKSPACE_DISPOSITION_ONLY_BASH_PERMISSION_RULES: [string, string][] = [
+  ["*", "deny"],
+  ["task_workspace.py issue-summary", "allow"],
+  ["python task_workspace.py issue-summary", "allow"],
+  ["python3 task_workspace.py issue-summary", "allow"],
+  ["*/task_workspace.py issue-summary", "allow"],
+  ["python */task_workspace.py issue-summary", "allow"],
+  ["python3 */task_workspace.py issue-summary", "allow"],
+  ["task_workspace.py add-comment *", "allow"],
+  ["python task_workspace.py add-comment *", "allow"],
+  ["python3 task_workspace.py add-comment *", "allow"],
+  ["*/task_workspace.py add-comment *", "allow"],
+  ["python */task_workspace.py add-comment *", "allow"],
+  ["python3 */task_workspace.py add-comment *", "allow"],
+  ["task_workspace.py set-status *", "allow"],
+  ["python task_workspace.py set-status *", "allow"],
+  ["python3 task_workspace.py set-status *", "allow"],
+  ["*/task_workspace.py set-status *", "allow"],
+  ["python */task_workspace.py set-status *", "allow"],
+  ["python3 */task_workspace.py set-status *", "allow"],
+];
+
 function resolveXdgConfigHome(env: Record<string, string>): string {
   return (
     (typeof env.XDG_CONFIG_HOME === "string" && env.XDG_CONFIG_HOME.trim()) ||
@@ -51,11 +73,15 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function mergeTaskWorkspaceHelperOnlyPermissions(
+function mergeTaskWorkspacePermissions(
   existingPermission: Record<string, unknown>,
+  policy: Exclude<OpenCodeTaskWorkspaceCommandPolicy, "default">,
 ): Record<string, unknown> {
   const bash: Record<string, unknown> = {};
-  for (const [pattern, permission] of TASK_WORKSPACE_HELPER_ONLY_BASH_PERMISSION_RULES) {
+  const rules = policy === "disposition_only"
+    ? TASK_WORKSPACE_DISPOSITION_ONLY_BASH_PERMISSION_RULES
+    : TASK_WORKSPACE_HELPER_ONLY_BASH_PERMISSION_RULES;
+  for (const [pattern, permission] of rules) {
     bash[pattern] = permission;
   }
   return {
@@ -69,8 +95,9 @@ function mergeTaskWorkspaceHelperOnlyPermissions(
   };
 }
 
-function applyTaskWorkspaceHelperOnlyPolicyToConfigContent(
+function applyTaskWorkspacePolicyToConfigContent(
   env: Record<string, string>,
+  policy: Exclude<OpenCodeTaskWorkspaceCommandPolicy, "default">,
 ): Record<string, string> {
   const raw = env.OPENCODE_CONFIG_CONTENT;
   if (typeof raw !== "string" || raw.trim().length === 0) return env;
@@ -88,7 +115,7 @@ function applyTaskWorkspaceHelperOnlyPolicyToConfigContent(
     ...env,
     OPENCODE_CONFIG_CONTENT: JSON.stringify({
       ...parsed,
-      permission: mergeTaskWorkspaceHelperOnlyPermissions(existingPermission),
+      permission: mergeTaskWorkspacePermissions(existingPermission, policy),
     }),
   };
 }
@@ -182,7 +209,7 @@ export async function prepareOpenCodeRuntimeConfig(input: {
 }): Promise<PreparedOpenCodeRuntimeConfig> {
   const skipPermissions = asBoolean(input.config.dangerouslySkipPermissions, true);
   const taskWorkspaceCommandPolicy = input.taskWorkspaceCommandPolicy ?? "default";
-  if (!skipPermissions && taskWorkspaceCommandPolicy !== "helper_only") {
+  if (!skipPermissions && taskWorkspaceCommandPolicy === "default") {
     return {
       env: input.env,
       notes: [],
@@ -214,8 +241,8 @@ export async function prepareOpenCodeRuntimeConfig(input: {
     ? existingConfig.permission
     : {};
   const mergedPermission =
-    taskWorkspaceCommandPolicy === "helper_only"
-      ? mergeTaskWorkspaceHelperOnlyPermissions(existingPermission)
+    taskWorkspaceCommandPolicy !== "default"
+      ? mergeTaskWorkspacePermissions(existingPermission, taskWorkspaceCommandPolicy)
       : existingPermission;
   const notes: string[] = [];
   if (skipPermissions) {
@@ -226,6 +253,11 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   if (taskWorkspaceCommandPolicy === "helper_only") {
     notes.push(
       "Injected task workspace helper-only shell policy: use task_workspace.py for workspace reads, searches, lists, and writes.",
+    );
+  }
+  if (taskWorkspaceCommandPolicy === "disposition_only") {
+    notes.push(
+      "Injected task disposition-only shell policy: use task_workspace.py only for issue-summary, add-comment, and set-status.",
     );
   }
 
@@ -302,8 +334,8 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   }
   await fs.writeFile(runtimeConfigPath, `${JSON.stringify(nextConfig, null, 2)}\n`, "utf8");
 
-  const nextEnv = taskWorkspaceCommandPolicy === "helper_only"
-    ? applyTaskWorkspaceHelperOnlyPolicyToConfigContent(input.env)
+  const nextEnv = taskWorkspaceCommandPolicy !== "default"
+    ? applyTaskWorkspacePolicyToConfigContent(input.env, taskWorkspaceCommandPolicy)
     : input.env;
 
   return {

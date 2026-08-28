@@ -57,7 +57,10 @@ import {
   requireOpenCodeModelId,
 } from "./models.js";
 import { removeMaintainerOnlySkillSymlinks } from "@paperclipai/adapter-utils/server-utils";
-import { prepareOpenCodeRuntimeConfig } from "./runtime-config.js";
+import {
+  prepareOpenCodeRuntimeConfig,
+  type OpenCodeTaskWorkspaceCommandPolicy,
+} from "./runtime-config.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { resolveOpenCodeSkillsHome } from "./skills.js";
 
@@ -91,10 +94,18 @@ function hasPaperclipTaskWorkspaceInventory(context: Record<string, unknown>): b
   return Object.keys(inventory).length > 0;
 }
 
-function shouldUseTaskWorkspaceHelperOnlyPolicy(
+function resolveTaskWorkspaceCommandPolicy(
   config: Record<string, unknown>,
   context: Record<string, unknown>,
-): boolean {
+): OpenCodeTaskWorkspaceCommandPolicy {
+  const wake = parseObject(context.paperclipWake);
+  const recovery = parseObject(wake.recovery);
+  if (
+    recovery.cause === "successful_run_missing_state" ||
+    recovery.cause === "successful_run_missing_issue_disposition"
+  ) {
+    return "disposition_only";
+  }
   const configured = asString(
     config.taskWorkspaceCommandPolicy ?? config.paperclipTaskWorkspaceCommandPolicy,
     "auto",
@@ -102,9 +113,11 @@ function shouldUseTaskWorkspaceHelperOnlyPolicy(
     .trim()
     .toLowerCase()
     .replace(/-/g, "_");
-  if (configured === "off" || configured === "default" || configured === "false") return false;
-  if (configured === "helper_only" || configured === "task_workspace_helper_only") return true;
-  return configured === "auto" && hasPaperclipTaskWorkspaceInventory(context);
+  if (configured === "off" || configured === "default" || configured === "false") return "default";
+  if (configured === "helper_only" || configured === "task_workspace_helper_only") return "helper_only";
+  return configured === "auto" && hasPaperclipTaskWorkspaceInventory(context)
+    ? "helper_only"
+    : "default";
 }
 const REMOTE_OPENCODE_MODELS_PROBE_SANDBOX_TIMEOUT_SEC = 120;
 
@@ -358,9 +371,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     env,
     config,
     targetIsRemote: executionTargetIsRemote,
-    taskWorkspaceCommandPolicy: shouldUseTaskWorkspaceHelperOnlyPolicy(config, context)
-      ? "helper_only"
-      : "default",
+    taskWorkspaceCommandPolicy: resolveTaskWorkspaceCommandPolicy(config, context),
   });
   const localRuntimeConfigHome =
     preparedRuntimeConfig.notes.length > 0 ? preparedRuntimeConfig.env.XDG_CONFIG_HOME : "";

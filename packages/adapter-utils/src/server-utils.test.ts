@@ -781,6 +781,20 @@ describe("runChildProcess", () => {
 });
 
 describe("renderPaperclipWakePrompt", () => {
+  it("directs missing-disposition recovery to Todo when unfinished work has no live path", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_continuation_needed",
+      issue: { id: "issue-1", identifier: "PAP-1", title: "Recover status", status: "in_progress" },
+      recovery: { cause: "successful_run_missing_issue_disposition" },
+      comments: [],
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      fallbackFetchNeeded: false,
+    });
+
+    expect(prompt).toContain("`todo` when work remains but no process is live");
+    expect(prompt).toContain("Do not start or continue deliverable work.");
+  });
+
   it("preserves and renders the issue description in structured wake payloads", () => {
     const payload = {
       reason: "issue_assigned",
