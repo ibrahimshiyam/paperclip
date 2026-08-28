@@ -3935,6 +3935,50 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments.some((comment) => comment.body === REQUIRED_ISSUE_DISPOSITION_NOTICE_BODY)).toBe(false);
   });
 
+  it("restores Todo when the bounded missing-disposition recovery also omits status", async () => {
+    const { companyId, agentId, issueId } = await seedQueuedIssueRunFixture();
+    await db
+      .update(agents)
+      .set({
+        adapterConfig: {
+          requireIssueDisposition: true,
+          recoverMissingDispositionOnce: true,
+        },
+      })
+      .where(eq(agents.id, agentId));
+    mockAdapterExecute.mockResolvedValue({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      errorMessage: null,
+      summary: "Exited without recording a disposition.",
+      provider: "test",
+      model: "test-model",
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForValue(async () => {
+      const currentIssue = await db
+        .select({ status: issues.status })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      const runs = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId)));
+      return currentIssue?.status === "todo" && runs.length === 2 &&
+        runs.every((run) => run.status === "failed")
+        ? currentIssue
+        : null;
+    }, 10_000);
+    await waitForHeartbeatIdle(db, 10_000);
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments.some((comment) => comment.body === REQUIRED_ISSUE_DISPOSITION_NOTICE_BODY)).toBe(false);
+  });
+
   it("requeues a missing-disposition handoff when the previous corrective wake was cancelled", async () => {
     const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
     const idempotencyKey = `finish_successful_run_handoff:${issueId}:${runId}:1`;

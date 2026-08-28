@@ -17572,6 +17572,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       if (!issue) return null;
       if (issue.executionRunId && issue.executionRunId !== run.id) return null;
 
+      const isExhaustedMissingDispositionRecovery =
+        run.errorCode === REQUIRED_ISSUE_DISPOSITION_ERROR_CODE &&
+        readNonEmptyString(runContext.recoveryCause) ===
+          "successful_run_missing_issue_disposition";
+      if (
+        isExhaustedMissingDispositionRecovery &&
+        issue.status === "in_progress" &&
+        !issue.assigneeUserId &&
+        issue.assigneeAgentId === run.agentId
+      ) {
+        const restoredIssue = await issuesSvc.update(
+          issue.id,
+          { status: "todo", executionState: null },
+          tx,
+        );
+        return {
+          kind: "restored_todo" as const,
+          issue: restoredIssue ?? issue,
+          previousStatus: issue.status,
+        };
+      }
+
       // Workspace-validation recovery: if the finalizing run failed workspace
       // validation, surface the primary issue for the blocked-recovery comment path.
       // Sibling lock cleanup is already done above; only the primary issue carries
@@ -18204,6 +18226,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         issue: promotionResult.issue,
         previousStatus: promotionResult.previousStatus as "todo" | "in_progress" | "in_review",
         latestRun: run,
+      });
+      return;
+    }
+
+    if (promotionResult?.kind === "restored_todo") {
+      await logActivity(db, {
+        companyId: promotionResult.issue.companyId,
+        actorType: "system",
+        actorId: "heartbeat",
+        agentId: run.agentId,
+        runId: run.id,
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: promotionResult.issue.id,
+        details: {
+          identifier: promotionResult.issue.identifier,
+          status: "todo",
+          previousStatus: promotionResult.previousStatus,
+          source: "heartbeat.missing_disposition_recovery_exhausted",
+          latestRunId: run.id,
+          latestRunErrorCode: run.errorCode,
+        },
       });
       return;
     }
