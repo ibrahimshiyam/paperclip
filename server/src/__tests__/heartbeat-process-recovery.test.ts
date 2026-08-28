@@ -8,6 +8,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import {
   activityLog,
   agents,
+  agentTaskSessions,
   agentRuntimeState,
   agentWakeupRequests,
   assets,
@@ -3775,6 +3776,15 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         },
       })
       .where(eq(agents.id, agentId));
+    await db.insert(agentTaskSessions).values({
+      companyId,
+      agentId,
+      adapterType: "codex_local",
+      taskKey: issueId,
+      sessionParamsJson: { sessionId: "poisoned-session" },
+      sessionDisplayId: "poisoned-session",
+      lastRunId: runId,
+    });
     mockAdapterExecute.mockResolvedValueOnce({
       exitCode: 0,
       signal: null,
@@ -3814,6 +3824,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       },
     });
     expect(blockedIssue?.executionRunId).toBeNull();
+
+    const retainedTaskSessions = await db
+      .select()
+      .from(agentTaskSessions)
+      .where(and(eq(agentTaskSessions.companyId, companyId), eq(agentTaskSessions.taskKey, issueId)));
+    expect(retainedTaskSessions).toHaveLength(0);
 
     const worker = await db
       .select({ status: agents.status, errorReason: agents.errorReason })

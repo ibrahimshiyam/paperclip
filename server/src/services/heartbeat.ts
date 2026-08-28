@@ -16745,10 +16745,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
       }
 
+      const sessionResult = requiredIssueDispositionViolation
+        ? { ...adapterResult, clearSession: true }
+        : adapterResult;
       const nextSessionState = resolveNextSessionState({
         adapterType: agent.adapterType,
         codec: sessionCodec,
-        adapterResult,
+        adapterResult: sessionResult,
         outcome,
         previousParams: previousSessionParams,
         previousDisplayId: runtimeForAdapter.sessionDisplayId,
@@ -17051,7 +17054,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           legacySessionId: nextSessionState.legacySessionId,
         }, normalizedUsage);
         if (taskKey) {
-          if (adapterResult.clearSession || (!nextSessionState.params && !nextSessionState.displayId)) {
+          if (sessionResult.clearSession || (!nextSessionState.params && !nextSessionState.displayId)) {
             await clearTaskSessions(agent.companyId, agent.id, {
               taskKey,
               adapterType: agent.adapterType,
