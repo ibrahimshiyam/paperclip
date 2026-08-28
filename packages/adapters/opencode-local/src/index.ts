@@ -121,6 +121,7 @@ Core fields:
 - taskWorkspaceCommandPolicy (string, optional): use \`helper_only\` for a deny-by-default shell policy that permits only the Paperclip task workspace helper; defaults to \`auto\`, which enables this for task runs that include a workspace artifact inventory
 - requireIssueDisposition (boolean, optional): fail the run and block its issue when the process exits successfully while its assigned issue is still \`in_progress\`
 - missingDispositionOwnerAgentId (string, optional): agent to notify after a required-disposition contract failure; the issue remains blocked and no corrective worker retry is queued
+- recoverMissingDispositionOnce (boolean, optional): clear the failed task session and allow Paperclip's existing bounded continuation path to retry the same assigned issue once before blocking; defaults to false
 - promptTemplate (string, optional): run prompt template
 - command (string, optional): defaults to "opencode"
 - extraArgs (string[], optional): additional CLI args

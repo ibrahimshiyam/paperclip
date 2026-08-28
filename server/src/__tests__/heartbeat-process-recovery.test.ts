@@ -3858,6 +3858,81 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(recoveryActions).toHaveLength(0);
   });
 
+  it("retries a missing disposition once with a clean task session when configured", async () => {
+    const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+    await db
+      .update(agents)
+      .set({
+        adapterConfig: {
+          requireIssueDisposition: true,
+          recoverMissingDispositionOnce: true,
+        },
+      })
+      .where(eq(agents.id, agentId));
+    await db.insert(agentTaskSessions).values({
+      companyId,
+      agentId,
+      adapterType: "codex_local",
+      taskKey: issueId,
+      sessionParamsJson: { sessionId: "poisoned-session" },
+      sessionDisplayId: "poisoned-session",
+      lastRunId: runId,
+    });
+    mockAdapterExecute
+      .mockResolvedValueOnce({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Retained truthful workspace progress but omitted the disposition.",
+        provider: "test",
+        model: "test-model",
+      })
+      .mockImplementationOnce(async () => {
+        await db.update(issues).set({ status: "done" }).where(eq(issues.id, issueId));
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          errorMessage: null,
+          summary: "Completed from the retained workspace in a clean session.",
+          provider: "test",
+          model: "test-model",
+        };
+      });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForValue(async () => {
+      const currentIssue = await db
+        .select({ status: issues.status })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      return currentIssue?.status === "done" ? currentIssue : null;
+    }, 10_000);
+    await waitForHeartbeatIdle(db, 10_000);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId)));
+    expect(runs).toHaveLength(2);
+    expect(runs.some((run) => run.errorCode === REQUIRED_ISSUE_DISPOSITION_ERROR_CODE)).toBe(true);
+    expect(runs.some((run) => (
+      run.contextSnapshot as Record<string, unknown> | null
+    )?.retryReason === "issue_continuation_needed")).toBe(true);
+
+    const retainedTaskSessions = await db
+      .select()
+      .from(agentTaskSessions)
+      .where(and(eq(agentTaskSessions.companyId, companyId), eq(agentTaskSessions.taskKey, issueId)));
+    expect(retainedTaskSessions.every((session) => session.sessionDisplayId !== "poisoned-session")).toBe(true);
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments.some((comment) => comment.body === REQUIRED_ISSUE_DISPOSITION_NOTICE_BODY)).toBe(false);
+  });
+
   it("requeues a missing-disposition handoff when the previous corrective wake was cancelled", async () => {
     const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
     const idempotencyKey = `finish_successful_run_handoff:${issueId}:${runId}:1`;

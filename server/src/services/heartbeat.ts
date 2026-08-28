@@ -16709,6 +16709,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       let requiredIssueDispositionViolation: {
         issue: Pick<typeof issues.$inferSelect, "id" | "companyId" | "identifier" | "title">;
         ownerAgentId: string | null;
+        recoverOnce: boolean;
         reason: string;
       } | null = null;
       if (
@@ -16740,6 +16741,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           requiredIssueDispositionViolation = {
             issue: dispositionIssue,
             ownerAgentId: readNonEmptyString(mergedConfig.missingDispositionOwnerAgentId),
+            recoverOnce: asBoolean(mergedConfig.recoverMissingDispositionOnce, false),
             reason: dispositionDecision.reason,
           };
         }
@@ -16921,10 +16923,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         persistedRun = await classifyAndPersistRunLiveness(persistedRun, persistedResultJson) ?? persistedRun;
       }
 
-      if (requiredIssueDispositionViolation && persistedRun) {
+      if (requiredIssueDispositionViolation && persistedRun && !requiredIssueDispositionViolation.recoverOnce) {
         await blockIssueForRequiredDispositionViolation({
           ...requiredIssueDispositionViolation,
           run: persistedRun,
+        });
+      } else if (requiredIssueDispositionViolation && persistedRun) {
+        await appendRunEvent(persistedRun, await nextRunEventSeq(persistedRun.id), {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "warn",
+          message: "Missing disposition left eligible for one clean-session continuation",
+          payload: {
+            errorCode: REQUIRED_ISSUE_DISPOSITION_ERROR_CODE,
+            sessionCleared: true,
+            retryPolicy: "bounded_once",
+          },
         });
       }
 
