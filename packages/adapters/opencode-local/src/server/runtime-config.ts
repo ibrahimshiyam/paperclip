@@ -64,6 +64,7 @@ function mergeTaskWorkspaceHelperOnlyPermissions(
     edit: "deny",
     glob: "deny",
     grep: "deny",
+    task: "deny",
     bash,
   };
 }

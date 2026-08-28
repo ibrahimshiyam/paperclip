@@ -335,6 +335,7 @@ describe("prepareOpenCodeRuntimeConfig", () => {
       edit: "deny",
       glob: "deny",
       grep: "deny",
+      task: "deny",
     });
     expect(runtimeConfig.permission?.bash).toMatchObject({
       "*": "deny",
@@ -401,6 +402,7 @@ describe("prepareOpenCodeRuntimeConfig", () => {
       edit: "deny",
       glob: "deny",
       grep: "deny",
+      task: "deny",
     });
     expect(runtimeConfig.permission?.bash).toMatchObject({
       "*": "deny",
@@ -435,8 +437,9 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
 
     const content = JSON.parse(prepared.env.OPENCODE_CONFIG_CONTENT) as {
-      permission?: { bash?: Record<string, string> };
+      permission?: { bash?: Record<string, string>; task?: string };
     };
+    expect(content.permission?.task).toBe("deny");
     expect(content.permission?.bash).toMatchObject({
       "*": "deny",
       "task_workspace.py *": "allow",
@@ -458,8 +461,9 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
     const runtimeConfig = JSON.parse(
       await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
-    ) as { permission?: { bash?: Record<string, string> } };
+    ) as { permission?: { bash?: Record<string, string>; task?: string } };
 
+    expect(runtimeConfig.permission?.task).toBe("deny");
     expect(runtimeConfig.permission?.bash).toMatchObject({
       "*": "deny",
       "task_workspace.py *": "allow",
