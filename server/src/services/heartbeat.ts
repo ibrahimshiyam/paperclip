@@ -17578,15 +17578,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           "successful_run_missing_issue_disposition";
       if (
         isExhaustedMissingDispositionRecovery &&
-        issue.status === "in_progress" &&
+        (issue.status === "todo" || issue.status === "in_progress") &&
         !issue.assigneeUserId &&
         issue.assigneeAgentId === run.agentId
       ) {
-        const restoredIssue = await issuesSvc.update(
-          issue.id,
-          { status: "todo", executionState: null },
-          tx,
-        );
+        const restoredIssue = issue.status === "todo"
+          ? issue
+          : await issuesSvc.update(
+              issue.id,
+              { status: "todo", executionState: null },
+              tx,
+            );
         return {
           kind: "restored_todo" as const,
           issue: restoredIssue ?? issue,
