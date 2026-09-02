@@ -13,8 +13,11 @@ import {
   buildPaperclipEnv,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   materializePaperclipSkillCopy,
+  PAPERCLIP_OPERATIONAL_SKILL_KEY,
   refreshPaperclipWorkspaceEnvForExecution,
   renderPaperclipWakePrompt,
+  resolveLegacyPaperclipDesiredSkillNames,
+  resolvePaperclipDesiredSkillNames,
   selectPaperclipTaskMarkdown,
   runningProcesses,
   runChildProcess,
@@ -27,6 +30,45 @@ import {
   UNMANAGED_BACKGROUND_TASK_STOP_REASON,
   WATCHDOG_DEFAULT_MANDATE,
 } from "./server-utils.js";
+
+describe("legacy adapter skill selection", () => {
+  const operationalEntry = {
+    key: PAPERCLIP_OPERATIONAL_SKILL_KEY,
+    runtimeName: "paperclip",
+  };
+  const optionalEntry = {
+    key: "company/example/reviewer",
+    runtimeName: "reviewer",
+  };
+
+  it("keeps the operational skill selected without a stored preference", () => {
+    expect(resolveLegacyPaperclipDesiredSkillNames({}, [operationalEntry, optionalEntry])).toEqual([
+      PAPERCLIP_OPERATIONAL_SKILL_KEY,
+    ]);
+  });
+
+  it("keeps the operational skill selected after an explicit empty replacement", () => {
+    expect(resolveLegacyPaperclipDesiredSkillNames(
+      { paperclipSkillSync: { desiredSkills: [] } },
+      [operationalEntry, optionalEntry],
+    )).toEqual([PAPERCLIP_OPERATIONAL_SKILL_KEY]);
+  });
+
+  it("does not force optional skills or synthesize a missing operational entry", () => {
+    const config = { paperclipSkillSync: { desiredSkills: [optionalEntry.key] } };
+    expect(resolveLegacyPaperclipDesiredSkillNames(config, [operationalEntry, optionalEntry])).toEqual([
+      PAPERCLIP_OPERATIONAL_SKILL_KEY,
+      optionalEntry.key,
+    ]);
+    expect(resolveLegacyPaperclipDesiredSkillNames(config, [optionalEntry])).toEqual([
+      optionalEntry.key,
+    ]);
+  });
+
+  it("leaves the configurable resolver available for native runners", () => {
+    expect(resolvePaperclipDesiredSkillNames({}, [operationalEntry])).toEqual([]);
+  });
+});
 
 function isPidAlive(pid: number) {
   try {
@@ -739,6 +781,20 @@ describe("runChildProcess", () => {
 });
 
 describe("renderPaperclipWakePrompt", () => {
+  it("directs missing-disposition recovery to Todo when unfinished work has no live path", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_continuation_needed",
+      issue: { id: "issue-1", identifier: "PAP-1", title: "Recover status", status: "in_progress" },
+      recovery: { cause: "successful_run_missing_issue_disposition" },
+      comments: [],
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      fallbackFetchNeeded: false,
+    });
+
+    expect(prompt).toContain("`todo` when work remains but no process is live");
+    expect(prompt).toContain("Do not start or continue deliverable work.");
+  });
+
   it("preserves and renders the issue description in structured wake payloads", () => {
     const payload = {
       reason: "issue_assigned",

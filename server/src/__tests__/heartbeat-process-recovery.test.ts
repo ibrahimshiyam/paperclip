@@ -8,6 +8,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import {
   activityLog,
   agents,
+  agentTaskSessions,
   agentRuntimeState,
   agentWakeupRequests,
   assets,
@@ -3775,6 +3776,15 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         },
       })
       .where(eq(agents.id, agentId));
+    await db.insert(agentTaskSessions).values({
+      companyId,
+      agentId,
+      adapterType: "codex_local",
+      taskKey: issueId,
+      sessionParamsJson: { sessionId: "poisoned-session" },
+      sessionDisplayId: "poisoned-session",
+      lastRunId: runId,
+    });
     mockAdapterExecute.mockResolvedValueOnce({
       exitCode: 0,
       signal: null,
@@ -3815,6 +3825,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
     expect(blockedIssue?.executionRunId).toBeNull();
 
+    const retainedTaskSessions = await db
+      .select()
+      .from(agentTaskSessions)
+      .where(and(eq(agentTaskSessions.companyId, companyId), eq(agentTaskSessions.taskKey, issueId)));
+    expect(retainedTaskSessions).toHaveLength(0);
+
     const worker = await db
       .select({ status: agents.status, errorReason: agents.errorReason })
       .from(agents)
@@ -3840,6 +3856,127 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .from(issueRecoveryActions)
       .where(eq(issueRecoveryActions.sourceIssueId, issueId));
     expect(recoveryActions).toHaveLength(0);
+  });
+
+  it("retries a missing disposition once with a clean task session when configured", async () => {
+    const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+    await db
+      .update(agents)
+      .set({
+        adapterConfig: {
+          requireIssueDisposition: true,
+          recoverMissingDispositionOnce: true,
+        },
+      })
+      .where(eq(agents.id, agentId));
+    await db.insert(agentTaskSessions).values({
+      companyId,
+      agentId,
+      adapterType: "codex_local",
+      taskKey: issueId,
+      sessionParamsJson: { sessionId: "poisoned-session" },
+      sessionDisplayId: "poisoned-session",
+      lastRunId: runId,
+    });
+    mockAdapterExecute
+      .mockResolvedValueOnce({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Retained truthful workspace progress but omitted the disposition.",
+        provider: "test",
+        model: "test-model",
+      })
+      .mockImplementationOnce(async () => {
+        await db.update(issues).set({ status: "done" }).where(eq(issues.id, issueId));
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          errorMessage: null,
+          summary: "Completed from the retained workspace in a clean session.",
+          provider: "test",
+          model: "test-model",
+        };
+      });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForValue(async () => {
+      const currentIssue = await db
+        .select({ status: issues.status })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      return currentIssue?.status === "done" ? currentIssue : null;
+    }, 10_000);
+    await waitForHeartbeatIdle(db, 10_000);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId)));
+    expect(runs).toHaveLength(2);
+    expect(runs.some((run) => run.errorCode === REQUIRED_ISSUE_DISPOSITION_ERROR_CODE)).toBe(true);
+    expect(runs.some((run) => {
+      const context = run.contextSnapshot as Record<string, unknown> | null;
+      return context?.retryReason === "issue_continuation_needed" &&
+        context?.recoveryCause === "successful_run_missing_issue_disposition";
+    })).toBe(true);
+
+    const retainedTaskSessions = await db
+      .select()
+      .from(agentTaskSessions)
+      .where(and(eq(agentTaskSessions.companyId, companyId), eq(agentTaskSessions.taskKey, issueId)));
+    expect(retainedTaskSessions.every((session) => session.sessionDisplayId !== "poisoned-session")).toBe(true);
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments.some((comment) => comment.body === REQUIRED_ISSUE_DISPOSITION_NOTICE_BODY)).toBe(false);
+  });
+
+  it("restores Todo when the bounded missing-disposition recovery also omits status", async () => {
+    const { companyId, agentId, issueId } = await seedQueuedIssueRunFixture();
+    await db
+      .update(agents)
+      .set({
+        adapterConfig: {
+          requireIssueDisposition: true,
+          recoverMissingDispositionOnce: true,
+        },
+      })
+      .where(eq(agents.id, agentId));
+    mockAdapterExecute.mockResolvedValue({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      errorMessage: null,
+      summary: "Exited without recording a disposition.",
+      provider: "test",
+      model: "test-model",
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForValue(async () => {
+      const currentIssue = await db
+        .select({ status: issues.status })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      const runs = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId)));
+      return currentIssue?.status === "todo" && runs.length === 2 &&
+        runs.every((run) => run.status === "failed")
+        ? currentIssue
+        : null;
+    }, 10_000);
+    await waitForHeartbeatIdle(db, 10_000);
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments.some((comment) => comment.body === REQUIRED_ISSUE_DISPOSITION_NOTICE_BODY)).toBe(false);
   });
 
   it("requeues a missing-disposition handoff when the previous corrective wake was cancelled", async () => {
@@ -5672,6 +5809,48 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     if (retryRun) {
       await waitForRunToSettle(heartbeat, retryRun.id);
     }
+  });
+
+  it("does not relaunch assigned todo work after missing-disposition repair is exhausted", async () => {
+    const { agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "todo",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+      runErrorCode: "missing_issue_disposition",
+    });
+    await db
+      .update(heartbeatRuns)
+      .set({
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "issue_continuation_needed",
+          retryReason: "issue_continuation_needed",
+          recoveryCause: "successful_run_missing_issue_disposition",
+        },
+      })
+      .where(eq(heartbeatRuns.id, runId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.assignmentDispatched).toBe(0);
+    expect(result.dispatchRequeued).toBe(0);
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(result.issueIds).toEqual([]);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue).toMatchObject({ status: "todo", executionRunId: null });
   });
 
   it("re-enqueues handed-back todo work when its resolving run succeeded but the wake was lost", async () => {

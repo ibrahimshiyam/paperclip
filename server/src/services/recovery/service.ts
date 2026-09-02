@@ -87,6 +87,7 @@ import {
   withRecoveryModelProfileHint,
 } from "./model-profile-hint.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
+import { REQUIRED_ISSUE_DISPOSITION_ERROR_CODE } from "../required-issue-disposition.js";
 import {
   collectDispositionRepairSourceState,
   dispositionRepairDelayMs,
@@ -4934,6 +4935,16 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         if (
           latestRun.status === "succeeded" &&
           !(await wasTodoHandedBackDuringOrAfterLatestRun(issue, latestRun))
+        ) {
+          result.skipped += 1;
+          continue;
+        }
+
+        const latestRunContext = parseObject(latestRun.contextSnapshot);
+        if (
+          latestRun.errorCode === REQUIRED_ISSUE_DISPOSITION_ERROR_CODE &&
+          readNonEmptyString(latestRunContext.recoveryCause) ===
+            "successful_run_missing_issue_disposition"
         ) {
           result.skipped += 1;
           continue;

@@ -16709,6 +16709,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       let requiredIssueDispositionViolation: {
         issue: Pick<typeof issues.$inferSelect, "id" | "companyId" | "identifier" | "title">;
         ownerAgentId: string | null;
+        recoverOnce: boolean;
         reason: string;
       } | null = null;
       if (
@@ -16740,15 +16741,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           requiredIssueDispositionViolation = {
             issue: dispositionIssue,
             ownerAgentId: readNonEmptyString(mergedConfig.missingDispositionOwnerAgentId),
+            recoverOnce: asBoolean(mergedConfig.recoverMissingDispositionOnce, false),
             reason: dispositionDecision.reason,
           };
         }
       }
 
+      const sessionResult = requiredIssueDispositionViolation
+        ? { ...adapterResult, clearSession: true }
+        : adapterResult;
       const nextSessionState = resolveNextSessionState({
         adapterType: agent.adapterType,
         codec: sessionCodec,
-        adapterResult,
+        adapterResult: sessionResult,
         outcome,
         previousParams: previousSessionParams,
         previousDisplayId: runtimeForAdapter.sessionDisplayId,
@@ -16918,10 +16923,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         persistedRun = await classifyAndPersistRunLiveness(persistedRun, persistedResultJson) ?? persistedRun;
       }
 
-      if (requiredIssueDispositionViolation && persistedRun) {
+      if (requiredIssueDispositionViolation && persistedRun && !requiredIssueDispositionViolation.recoverOnce) {
         await blockIssueForRequiredDispositionViolation({
           ...requiredIssueDispositionViolation,
           run: persistedRun,
+        });
+      } else if (requiredIssueDispositionViolation && persistedRun) {
+        await appendRunEvent(persistedRun, await nextRunEventSeq(persistedRun.id), {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "warn",
+          message: "Missing disposition left eligible for one clean-session continuation",
+          payload: {
+            errorCode: REQUIRED_ISSUE_DISPOSITION_ERROR_CODE,
+            sessionCleared: true,
+            retryPolicy: "bounded_once",
+          },
         });
       }
 
@@ -17051,7 +17068,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           legacySessionId: nextSessionState.legacySessionId,
         }, normalizedUsage);
         if (taskKey) {
-          if (adapterResult.clearSession || (!nextSessionState.params && !nextSessionState.displayId)) {
+          if (sessionResult.clearSession || (!nextSessionState.params && !nextSessionState.displayId)) {
             await clearTaskSessions(agent.companyId, agent.id, {
               taskKey,
               adapterType: agent.adapterType,
@@ -17554,6 +17571,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       if (!issue) return null;
       if (issue.executionRunId && issue.executionRunId !== run.id) return null;
+
+      const isExhaustedMissingDispositionRecovery =
+        run.errorCode === REQUIRED_ISSUE_DISPOSITION_ERROR_CODE &&
+        readNonEmptyString(runContext.recoveryCause) ===
+          "successful_run_missing_issue_disposition";
+      if (
+        isExhaustedMissingDispositionRecovery &&
+        (issue.status === "todo" || issue.status === "in_progress") &&
+        !issue.assigneeUserId &&
+        issue.assigneeAgentId === run.agentId
+      ) {
+        const restoredIssue = issue.status === "todo"
+          ? issue
+          : await issuesSvc.update(
+              issue.id,
+              { status: "todo", executionState: null },
+              tx,
+            );
+        return {
+          kind: "restored_todo" as const,
+          issue: restoredIssue ?? issue,
+          previousStatus: issue.status,
+        };
+      }
 
       // Workspace-validation recovery: if the finalizing run failed workspace
       // validation, surface the primary issue for the blocked-recovery comment path.
@@ -18074,6 +18115,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         taskKey: issue.id,
         wakeReason: recoveryReason,
         retryReason,
+        ...(run.errorCode === REQUIRED_ISSUE_DISPOSITION_ERROR_CODE
+          ? { recoveryCause: "successful_run_missing_issue_disposition" }
+          : {}),
         source: recoverySource,
         retryOfRunId: run.id,
       }, "normal_model");
@@ -18184,6 +18228,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         issue: promotionResult.issue,
         previousStatus: promotionResult.previousStatus as "todo" | "in_progress" | "in_review",
         latestRun: run,
+      });
+      return;
+    }
+
+    if (promotionResult?.kind === "restored_todo") {
+      await logActivity(db, {
+        companyId: promotionResult.issue.companyId,
+        actorType: "system",
+        actorId: "heartbeat",
+        agentId: run.agentId,
+        runId: run.id,
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: promotionResult.issue.id,
+        details: {
+          identifier: promotionResult.issue.identifier,
+          status: "todo",
+          previousStatus: promotionResult.previousStatus,
+          source: "heartbeat.missing_disposition_recovery_exhausted",
+          latestRunId: run.id,
+          latestRunErrorCode: run.errorCode,
+        },
       });
       return;
     }

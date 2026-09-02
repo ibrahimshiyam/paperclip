@@ -46,7 +46,7 @@ import {
   isPaperclipSkillSourceMissing,
   readPaperclipRuntimeSkillEntries,
   readPaperclipIssueWorkModeFromContext,
-  resolvePaperclipDesiredSkillNames,
+  resolveLegacyPaperclipDesiredSkillNames,
 } from "@paperclipai/adapter-utils/server-utils";
 import { materializePaperclipAttachments } from "@paperclipai/adapter-utils/paperclip-attachment-workspace";
 import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl } from "./parse.js";
@@ -57,8 +57,12 @@ import {
   requireOpenCodeModelId,
 } from "./models.js";
 import { removeMaintainerOnlySkillSymlinks } from "@paperclipai/adapter-utils/server-utils";
-import { prepareOpenCodeRuntimeConfig } from "./runtime-config.js";
+import {
+  prepareOpenCodeRuntimeConfig,
+  type OpenCodeTaskWorkspaceCommandPolicy,
+} from "./runtime-config.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
+import { resolveOpenCodeSkillsHome } from "./skills.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -90,10 +94,18 @@ function hasPaperclipTaskWorkspaceInventory(context: Record<string, unknown>): b
   return Object.keys(inventory).length > 0;
 }
 
-function shouldUseTaskWorkspaceHelperOnlyPolicy(
+function resolveTaskWorkspaceCommandPolicy(
   config: Record<string, unknown>,
   context: Record<string, unknown>,
-): boolean {
+): OpenCodeTaskWorkspaceCommandPolicy {
+  const wake = parseObject(context.paperclipWake);
+  const recovery = parseObject(wake.recovery);
+  if (
+    recovery.cause === "successful_run_missing_state" ||
+    recovery.cause === "successful_run_missing_issue_disposition"
+  ) {
+    return "disposition_only";
+  }
   const configured = asString(
     config.taskWorkspaceCommandPolicy ?? config.paperclipTaskWorkspaceCommandPolicy,
     "auto",
@@ -101,9 +113,11 @@ function shouldUseTaskWorkspaceHelperOnlyPolicy(
     .trim()
     .toLowerCase()
     .replace(/-/g, "_");
-  if (configured === "off" || configured === "default" || configured === "false") return false;
-  if (configured === "helper_only" || configured === "task_workspace_helper_only") return true;
-  return configured === "auto" && hasPaperclipTaskWorkspaceInventory(context);
+  if (configured === "off" || configured === "default" || configured === "false") return "default";
+  if (configured === "helper_only" || configured === "task_workspace_helper_only") return "helper_only";
+  return configured === "auto" && hasPaperclipTaskWorkspaceInventory(context)
+    ? "helper_only"
+    : "default";
 }
 const REMOTE_OPENCODE_MODELS_PROBE_SANDBOX_TIMEOUT_SEC = 120;
 
@@ -188,16 +202,12 @@ export async function ensureRemoteOpenCodeModelConfiguredAndAvailable(input: {
   }
 }
 
-function claudeSkillsHome(): string {
-  return path.join(os.homedir(), ".claude", "skills");
-}
-
 async function ensureOpenCodeSkillsInjected(
   onLog: AdapterExecutionContext["onLog"],
   skillsEntries: Array<{ key: string; runtimeName: string; source: string }>,
   desiredSkillNames?: string[],
+  skillsHome = resolveOpenCodeSkillsHome({}),
 ) {
-  const skillsHome = claudeSkillsHome();
   await fs.mkdir(skillsHome, { recursive: true });
   const desiredSet = new Set(desiredSkillNames ?? skillsEntries.map((entry) => entry.key));
   const selectedEntries = skillsEntries.filter((entry) => desiredSet.has(entry.key));
@@ -235,7 +245,7 @@ async function buildOpenCodeSkillsDir(config: Record<string, unknown>): Promise<
   const target = path.join(tmp, "skills");
   await fs.mkdir(target, { recursive: true });
   const availableEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
-  const desiredNames = new Set(resolvePaperclipDesiredSkillNames(config, availableEntries));
+  const desiredNames = new Set(resolveLegacyPaperclipDesiredSkillNames(config, availableEntries));
   for (const entry of availableEntries) {
     if (!desiredNames.has(entry.key)) continue;
     if (isPaperclipSkillSourceMissing(entry)) continue;
@@ -279,12 +289,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   let effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
   const openCodeSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
-  const desiredOpenCodeSkillNames = resolvePaperclipDesiredSkillNames(config, openCodeSkillEntries);
+  const desiredOpenCodeSkillNames = resolveLegacyPaperclipDesiredSkillNames(config, openCodeSkillEntries);
   if (!executionTargetIsRemote) {
     await ensureOpenCodeSkillsInjected(
       onLog,
       openCodeSkillEntries,
       desiredOpenCodeSkillNames,
+      resolveOpenCodeSkillsHome(config),
     );
   }
 
@@ -360,9 +371,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     env,
     config,
     targetIsRemote: executionTargetIsRemote,
-    taskWorkspaceCommandPolicy: shouldUseTaskWorkspaceHelperOnlyPolicy(config, context)
-      ? "helper_only"
-      : "default",
+    taskWorkspaceCommandPolicy: resolveTaskWorkspaceCommandPolicy(config, context),
   });
   const localRuntimeConfigHome =
     preparedRuntimeConfig.notes.length > 0 ? preparedRuntimeConfig.env.XDG_CONFIG_HOME : "";
