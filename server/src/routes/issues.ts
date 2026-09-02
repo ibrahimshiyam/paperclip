@@ -11629,10 +11629,11 @@ export function issueRoutes(
         },
       });
 
+      const wakeIssue = await svc.getById(issue.id) ?? issue;
       await queueResolvedInteractionContinuationWakeup({
         db,
         heartbeat,
-        issue,
+        issue: wakeIssue,
         interaction,
         actor,
         source: "issue.interaction.reject",
@@ -11770,10 +11771,11 @@ export function issueRoutes(
       });
 
       if (newlyResolvedItemIds.length > 0) {
+        const wakeIssue = await svc.getById(issue.id) ?? issue;
         await queueResolvedInteractionContinuationWakeup({
           db,
           heartbeat,
-          issue,
+          issue: wakeIssue,
           interaction,
           actor,
           source: "issue.interaction.verdicts",

@@ -333,6 +333,57 @@ type IssueResolutionContext = {
   createdByUserId: string | null;
 };
 
+function shouldCancelIssueForRejectedReviewDecision(issue: IssueResolutionContext) {
+  return issue.status === "in_review";
+}
+
+async function cancelIssueForRejectedReviewDecision(
+  tx: Db,
+  issue: IssueResolutionContext,
+  actor: InteractionActor,
+  reason: string | null,
+  source: "request_confirmation_rejected" | "request_item_verdict_rejected",
+) {
+  if (!shouldCancelIssueForRejectedReviewDecision(issue)) return null;
+
+  const updated = await issueService(tx).update(issue.id, {
+    status: "cancelled",
+    actorAgentId: actor.agentId ?? null,
+    actorUserId: actor.userId ?? null,
+  }, tx);
+  if (!updated) throw notFound("Issue not found");
+
+  const comment = await issueService(tx).addComment(
+    issue.id,
+    `Not pursuing. Rejected from In Review${reason ? `: ${reason}` : "."}`,
+    {
+      runId: actor.runId ?? null,
+    },
+    { authorType: "system" },
+    tx,
+  );
+
+  await logActivity(tx, {
+    companyId: issue.companyId,
+    actorType: actor.userId ? "user" : actor.agentId ? "agent" : "system",
+    actorId: actor.userId ?? actor.agentId ?? actor.systemId ?? "system",
+    agentId: actor.agentId ?? null,
+    runId: actor.runId ?? null,
+    action: "issue.review_rejected_cancelled",
+    entityType: "issue",
+    entityId: issue.id,
+    details: {
+      source,
+      status: "cancelled",
+      reason: reason ?? null,
+      commentId: comment.id,
+      _previous: { status: issue.status },
+    },
+  });
+
+  return updated;
+}
+
 async function assertRequestConfirmationResolutionAllowedUnderLock(
   tx: Db,
   issue: IssueResolutionContext,
@@ -1838,7 +1889,13 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
           "Interaction has already been resolved",
         );
       }
-      await touchIssue(tx, args.issue.id);
+      await cancelIssueForRejectedReviewDecision(
+        tx as unknown as Db,
+        issueContext,
+        args.actor,
+        reason || null,
+        "request_confirmation_rejected",
+      ) ?? await touchIssue(tx, args.issue.id);
       return resolved;
     });
 
@@ -2735,6 +2792,25 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       assertIssueOpenForInteractionResolution(issue);
       const data = submitIssueThreadInteractionVerdictsSchema.parse(input);
       const submission = await db.transaction(async (tx) => {
+        const issueContext = await tx
+          .select({
+            id: issues.id,
+            companyId: issues.companyId,
+            status: issues.status,
+            assigneeAgentId: issues.assigneeAgentId,
+            assigneeUserId: issues.assigneeUserId,
+            reviewPolicy: issues.reviewPolicy,
+            createdByAgentId: issues.createdByAgentId,
+            createdByUserId: issues.createdByUserId,
+          })
+          .from(issues)
+          .where(eq(issues.id, issue.id))
+          .for("update")
+          .then((rows: IssueResolutionContext[]) => rows[0] ?? null);
+        if (!issueContext || issueContext.companyId !== issue.companyId) {
+          throw notFound("Issue not found");
+        }
+
         const current = await tx
           .select()
           .from(issueThreadInteractions)
@@ -2819,7 +2895,20 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
           throw interactionAlreadyResolvedError();
         }
 
-        await touchIssue(tx, issue.id);
+        const rejectedItem = items.find((item) =>
+          newlyResolvedItemIds.includes(item.id) && item.verdict === "reject"
+        );
+        if (rejectedItem) {
+          await cancelIssueForRejectedReviewDecision(
+            tx as unknown as Db,
+            issueContext,
+            actor,
+            rejectedItem.reason ?? null,
+            "request_item_verdict_rejected",
+          );
+        } else {
+          await touchIssue(tx, issue.id);
+        }
         return {
           interaction: hydrateInteraction(updated),
           newlyResolvedItemIds,
