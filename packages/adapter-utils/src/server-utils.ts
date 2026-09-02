@@ -183,6 +183,7 @@ export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "- For plan approval, update the plan document first, then create request_confirmation targeting the latest plan revision with idempotencyKey confirmation:{issueId}:plan:{revisionId}. Wait for acceptance before creating implementation subtasks, and create a fresh confirmation after superseding board/user comments if approval is still needed.",
   "- If blocked, mark the issue blocked and name the unblock owner and action.",
   "- Respect budget, pause/cancel, approval gates, and company boundaries.",
+  "- Do not invent, infer, or guess the user's name. Address the user by name only when Paperclip explicitly provides an authenticated current-user display name in this prompt; otherwise use neutral wording such as \"Please review\" or \"The result is ready for review.\"",
 ].join("\n");
 
 export const WATCHDOG_DEFAULT_MANDATE = [

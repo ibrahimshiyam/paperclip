@@ -345,6 +345,34 @@ function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
+function readArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function hasOpportunityReviewQuestion(payload: unknown) {
+  const questions = readArray(parseObject(payload).questions);
+  return questions.some((question) => {
+    const record = parseObject(question);
+    if (readNonEmptyString(record.id) !== OPPORTUNITY_REVIEW_NEXT_STEP_QUESTION_ID) return false;
+    const optionIds = new Set(
+      readArray(record.options)
+        .map((option) => readNonEmptyString(parseObject(option).id))
+        .filter((id): id is string => Boolean(id)),
+    );
+    return [...OPPORTUNITY_REVIEW_OPTION_IDS].every((id) => optionIds.has(id));
+  });
+}
+
+function hasAnsweredOpportunityReviewReject(payload: unknown, result: unknown) {
+  if (!hasOpportunityReviewQuestion(payload)) return false;
+  const answers = readArray(parseObject(result).answers);
+  return answers.some((answer) => {
+    const record = parseObject(answer);
+    return readNonEmptyString(record.questionId) === OPPORTUNITY_REVIEW_NEXT_STEP_QUESTION_ID &&
+      readArray(record.optionIds).includes(OPPORTUNITY_REVIEW_REJECT_OPTION_ID);
+  });
+}
+
 function summarizeRunFailureForIssueComment(run: LatestIssueRun) {
   if (!run) return null;
 
@@ -398,6 +426,14 @@ const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
 // than escalating it as stranded.
 const CONTINUATION_WAITING_ON_REVIEW_ERROR_CODE = "issue_continuation_waiting_on_review";
 const INTERACTION_CONTINUATION_REQUEUE_MAX_ATTEMPTS = 3;
+const OPPORTUNITY_REVIEW_NEXT_STEP_QUESTION_ID = "next_step";
+const OPPORTUNITY_REVIEW_REJECT_OPTION_ID = "reject_archive";
+const OPPORTUNITY_REVIEW_OPTION_IDS = new Set([
+  "prepare_application",
+  "monitor",
+  "reject_archive",
+  "request_more_research",
+]);
 
 const CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS = 3;
 const CONTINUATION_RECOVERY_DEFAULT_MAX_ATTEMPTS = 1;
@@ -983,6 +1019,88 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       )
       .limit(1)
       .then((rows) => Boolean(rows[0]));
+  }
+
+  async function resolveAnsweredOpportunityReviewReject(issue: typeof issues.$inferSelect) {
+    if (issue.status === "done" || issue.status === "cancelled") return null;
+
+    const answeredReject = await db
+      .select({
+        id: issueThreadInteractions.id,
+        payload: issueThreadInteractions.payload,
+        result: issueThreadInteractions.result,
+      })
+      .from(issueThreadInteractions)
+      .where(
+        and(
+          eq(issueThreadInteractions.companyId, issue.companyId),
+          eq(issueThreadInteractions.issueId, issue.id),
+          eq(issueThreadInteractions.kind, "ask_user_questions"),
+          eq(issueThreadInteractions.status, "answered"),
+        ),
+      )
+      .orderBy(desc(sql`coalesce(${issueThreadInteractions.resolvedAt}, ${issueThreadInteractions.updatedAt})`))
+      .then((rows) => rows.find((row) => hasAnsweredOpportunityReviewReject(row.payload, row.result)) ?? null);
+    if (!answeredReject) return null;
+
+    const updated = await issuesSvc.update(issue.id, { status: "cancelled" });
+    if (!updated) return null;
+
+    const existingCancellationComment = await db
+      .select({ id: issueComments.id })
+      .from(issueComments)
+      .where(
+        and(
+          eq(issueComments.companyId, issue.companyId),
+          eq(issueComments.issueId, issue.id),
+          eq(issueComments.authorType, "system"),
+          sql`${issueComments.body} like 'Not pursuing.%REJECT/ARCHIVE%'`,
+          isNull(issueComments.deletedAt),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!existingCancellationComment) {
+      await issuesSvc.addComment(
+        issue.id,
+        "Not pursuing. Reviewer selected REJECT/ARCHIVE.",
+        {},
+        {
+          authorType: "system",
+          presentation: compactRecoveryPresentation("Opportunity review: rejected — moved to cancelled"),
+          metadata: {
+            version: 1,
+            sections: [{
+              title: "Review decision",
+              rows: [
+                { type: "key_value", label: "Interaction", value: answeredReject.id },
+                { type: "key_value", label: "Decision", value: "reject_archive" },
+                { type: "key_value", label: "Status", value: "cancelled" },
+              ],
+            }],
+          },
+        },
+      );
+    }
+
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: "system",
+      actorId: "recovery",
+      agentId: null,
+      runId: null,
+      action: "issue.review_rejected_cancelled",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        source: "answered_opportunity_review_reject_reconciliation",
+        interactionId: answeredReject.id,
+        status: "cancelled",
+        _previous: { status: issue.status },
+      },
+    });
+
+    return updated;
   }
 
   async function hasPersistedDurableWaitPath(issue: typeof issues.$inferSelect) {
@@ -3647,6 +3765,25 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         continue;
       }
 
+      const answeredOpportunityReject = await resolveAnsweredOpportunityReviewReject(issue);
+      if (answeredOpportunityReject) {
+        const resolved = await recoveryActionsSvc.resolveActiveForIssue({
+          companyId: action.companyId,
+          sourceIssueId: action.sourceIssueId,
+          actionId: action.id,
+          status: "resolved",
+          outcome: "restored",
+          resolutionNote: "answered_opportunity_review_reject",
+        });
+        if (resolved) {
+          result.resolved += 1;
+          result.issueIds.push(issue.id);
+        } else {
+          result.skipped += 1;
+        }
+        continue;
+      }
+
       const [sourceState, healthyChildren, hasNewSourcePath] = await Promise.all([
         collectDispositionRepairSourceState(db, { issue }),
         healthyOpenChildIssues(issue),
@@ -3862,6 +3999,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .limit(1)
       .then((rows) => rows[0] ?? null);
     if (!current || current.status === "done" || current.status === "cancelled") return "skipped";
+
+    const answeredOpportunityReject = await resolveAnsweredOpportunityReviewReject(current);
+    if (answeredOpportunityReject) {
+      await resolveDispositionRepairActionAsCovered(current, "answered_opportunity_review_reject");
+      return "covered";
+    }
 
     const dependencyWait = await resolveContinuationWaitingOnReview(current);
     if (dependencyWait) {
@@ -4326,6 +4469,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         : issue.assigneeAgentId;
       if (!agentId) {
         result.skipped += 1;
+        continue;
+      }
+
+      const answeredOpportunityReject = await resolveAnsweredOpportunityReviewReject(issue);
+      if (answeredOpportunityReject) {
+        result.waitingOnReviewResolved += 1;
+        result.issueIds.push(issue.id);
         continue;
       }
 

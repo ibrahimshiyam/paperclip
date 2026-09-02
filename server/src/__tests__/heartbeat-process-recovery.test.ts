@@ -4714,6 +4714,59 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
+  it("cancels stranded opportunity reviews that already have an answered reject decision", async () => {
+    const { companyId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "cancelled",
+      retryReason: "issue_continuation_needed",
+      runErrorCode: "issue_continuation_waiting_on_review",
+    });
+    await db.insert(issueThreadInteractions).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      kind: "ask_user_questions",
+      status: "answered",
+      continuationPolicy: "wake_assignee",
+      title: "Choose the next step for this opportunity",
+      payload: {
+        version: 1,
+        title: "Opportunity decision",
+        questions: [{
+          id: "next_step",
+          prompt: "What should happen next?",
+          selectionMode: "single",
+          required: true,
+          options: [
+            { id: "prepare_application", label: "PREPARE APPLICATION" },
+            { id: "monitor", label: "MONITOR" },
+            { id: "reject_archive", label: "REJECT/ARCHIVE" },
+            { id: "request_more_research", label: "REQUEST MORE RESEARCH" },
+          ],
+        }],
+      },
+      result: {
+        version: 1,
+        answers: [{ questionId: "next_step", optionIds: ["reject_archive"] }],
+        summaryMarkdown: null,
+      },
+      resolvedAt: new Date("2026-03-19T00:06:00.000Z"),
+      updatedAt: new Date("2026-03-19T00:06:00.000Z"),
+    });
+
+    await heartbeatService(db).reconcileStrandedAssignedIssues();
+
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issue.status).toBe("cancelled");
+    expect(issue.cancelledAt).toBeInstanceOf(Date);
+
+    const retries = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(sql`${agentWakeupRequests.idempotencyKey} LIKE 'issue_disposition_repair:%'`);
+    expect(retries).toHaveLength(0);
+  });
+
   it("includes issue documents and uploads in the disposition-repair source fingerprint", async () => {
     const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
       status: "in_progress",

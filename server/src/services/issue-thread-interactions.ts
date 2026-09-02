@@ -334,7 +334,7 @@ type IssueResolutionContext = {
 };
 
 function shouldCancelIssueForRejectedReviewDecision(issue: IssueResolutionContext) {
-  return issue.status === "in_review";
+  return !isTerminalIssueStatus(issue.status);
 }
 
 async function cancelIssueForRejectedReviewDecision(
@@ -404,8 +404,6 @@ async function applyAnsweredQuestionLifecycleEffects(
   answers: AskUserQuestionsAnswer[],
   actor: InteractionActor,
 ) {
-  if (issue.status !== "in_review") return false;
-
   const selectedNextStep = getOpportunityReviewNextStepAnswer(answers);
   if (!selectedNextStep) return false;
 
@@ -420,6 +418,7 @@ async function applyAnsweredQuestionLifecycleEffects(
     return true;
   }
 
+  if (issue.status !== "in_review") return false;
   if (!OPPORTUNITY_REVIEW_CONTINUE_OPTION_IDS.has(selectedNextStep)) return false;
 
   const updated = await issueService(tx).update(issue.id, {
