@@ -11,6 +11,31 @@ type PreparedOpenCodeRuntimeConfig = {
 
 export type OpenCodeTaskWorkspaceCommandPolicy = "default" | "helper_only";
 
+const DEFAULT_LOCAL_OPENCODE_PROVIDERS: Record<string, unknown> = {
+  dgx: {
+    npm: "@ai-sdk/openai-compatible",
+    name: "DGX GPT-OSS",
+    options: {
+      baseURL: "http://100.80.129.16:8083/v1",
+      apiKey: "EMPTY",
+    },
+    models: {
+      "gpt-oss-120b-mxfp4": { name: "GPT-OSS 120B MXFP4" },
+    },
+  },
+  "dgx-qwen": {
+    npm: "@ai-sdk/openai-compatible",
+    name: "DGX Qwen",
+    options: {
+      baseURL: "http://100.80.129.16:8084/v1",
+      apiKey: "EMPTY",
+    },
+    models: {
+      "qwen2.5-7b-instruct": { name: "Qwen 2.5 7B Instruct" },
+    },
+  },
+};
+
 const TASK_WORKSPACE_HELPER_ONLY_BASH_PERMISSION_RULES: [string, string][] = [
   ["*", "deny"],
   ["cat *", "deny"],
@@ -183,7 +208,14 @@ export async function prepareOpenCodeRuntimeConfig(input: {
 }): Promise<PreparedOpenCodeRuntimeConfig> {
   const skipPermissions = asBoolean(input.config.dangerouslySkipPermissions, true);
   const taskWorkspaceCommandPolicy = input.taskWorkspaceCommandPolicy ?? "default";
-  if (!skipPermissions && taskWorkspaceCommandPolicy !== "helper_only") {
+  const configuredModel = parseConfiguredModelRef(input.config.model);
+  const providerConfigRaw =
+    input.env.PAPERCLIP_OPENCODE_PROVIDERS ?? process.env.PAPERCLIP_OPENCODE_PROVIDERS;
+  const needsDefaultLocalProvider = Boolean(
+    configuredModel && Object.prototype.hasOwnProperty.call(DEFAULT_LOCAL_OPENCODE_PROVIDERS, configuredModel.provider),
+  );
+  const needsConfiguredProviders = typeof providerConfigRaw === "string" && providerConfigRaw.trim().length > 0;
+  if (!skipPermissions && taskWorkspaceCommandPolicy !== "helper_only" && !needsDefaultLocalProvider && !needsConfiguredProviders) {
     return {
       env: input.env,
       notes: [],
@@ -239,14 +271,16 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   // hard-coded) so the gateway URL, key env, and model list stay declarative.
   const resolveEnv = (name: string): string | undefined => input.env[name] ?? process.env[name];
   const gatewayProviders = parseProviderConfig(
-    input.env.PAPERCLIP_OPENCODE_PROVIDERS ?? process.env.PAPERCLIP_OPENCODE_PROVIDERS,
+    providerConfigRaw,
     resolveEnv,
     notes,
   );
   const existingProvider = isPlainObject(existingConfig.provider) ? existingConfig.provider : {};
-  let nextProvider = gatewayProviders
-    ? { ...existingProvider, ...gatewayProviders }
-    : existingProvider;
+  let nextProvider = {
+    ...DEFAULT_LOCAL_OPENCODE_PROVIDERS,
+    ...existingProvider,
+    ...(gatewayProviders ?? {}),
+  };
   if (gatewayProviders) {
     notes.push(
       `Injected ${Object.keys(gatewayProviders).length} custom OpenCode provider(s) from PAPERCLIP_OPENCODE_PROVIDERS: ${Object.keys(gatewayProviders).join(", ")}.`,
@@ -261,7 +295,6 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   // An empty entry deep-merges with catalog metadata, so this is a no-op for models
   // the catalog already knows, and we never clobber an explicit definition from the
   // user config or PAPERCLIP_OPENCODE_PROVIDERS.
-  const configuredModel = parseConfiguredModelRef(input.config.model);
   if (configuredModel) {
     const providerEntry = isPlainObject(nextProvider[configuredModel.provider])
       ? { ...(nextProvider[configuredModel.provider] as Record<string, unknown>) }

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { useParams, useNavigate, Link, Navigate, useBeforeUnload, type NavigateFunction } from "@/lib/router";
-import { useQueries, useQuery, useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import {
   agentsApi,
   type AgentKey,
@@ -51,7 +51,6 @@ import { AgentActionButtons } from "../components/AgentActionButtons";
 import { InlineBanner } from "../components/InlineBanner";
 import { BuiltInBundlePanel } from "../components/BuiltInBundlePanel";
 import { ConfigureBuiltInAgentModal } from "../components/ConfigureBuiltInAgentModal";
-import { IssueThreadInteractionCard } from "../components/IssueThreadInteractionCard";
 import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
 import { TrustPresetSection } from "../components/TrustPresetSection";
 import { FileTree, buildFileTree } from "../components/FileTree";
@@ -103,13 +102,9 @@ import {
   isUuidLike,
   type Agent,
   type AgentDetail as AgentDetailRecord,
-  type AskUserQuestionsAnswer,
-  type AskUserQuestionsInteraction,
   type BudgetPolicySummary,
   type HeartbeatRun,
   type HeartbeatRunEvent,
-  type Issue,
-  type IssueThreadInteraction,
   type AgentRuntimeState,
   type LiveEvent,
   type WorkspaceOperation,
@@ -140,14 +135,6 @@ const runStatusIcons: Record<string, { icon: typeof CheckCircle2; color: string 
 };
 
 const RUN_LOG_PAGE_BYTES = 256_000;
-
-const OPPORTUNITY_DECISION_QUESTION_ID = "next_step";
-const OPPORTUNITY_DECISION_OPTION_IDS = new Set([
-  "prepare_application",
-  "monitor",
-  "reject_archive",
-  "request_more_research",
-]);
 
 const REDACTED_ENV_VALUE = "***REDACTED***";
 const SECRET_ENV_KEY_RE =
@@ -2075,113 +2062,6 @@ function AgentConfigurePage({
 
 /* ---- Configuration Tab ---- */
 
-function isPendingOpportunityDecisionInteraction(
-  interaction: IssueThreadInteraction,
-): interaction is AskUserQuestionsInteraction {
-  if (interaction.kind !== "ask_user_questions" || interaction.status !== "pending") return false;
-  return interaction.payload.questions.some((question) =>
-    question.id === OPPORTUNITY_DECISION_QUESTION_ID
-    && question.selectionMode === "single"
-    && question.options.some((option) => OPPORTUNITY_DECISION_OPTION_IDS.has(option.id))
-  );
-}
-
-function OpportunityDecisionPanel({
-  agent,
-  companyId,
-}: {
-  agent: AgentDetailRecord;
-  companyId?: string;
-}) {
-  const { companyPrefix } = useParams<{ companyPrefix?: string }>();
-  const queryClient = useQueryClient();
-  const decisionIssuesQueryKey = companyId
-    ? [...queryKeys.issues.list(companyId), "agent-configuration-opportunity-decisions", agent.id]
-    : ["issues", "__missing-company__", "agent-configuration-opportunity-decisions", agent.id];
-  const { data: decisionIssues = [], isLoading: issuesLoading } = useQuery({
-    queryKey: decisionIssuesQueryKey,
-    queryFn: () => issuesApi.list(companyId!, {
-      status: "in_review",
-      assigneeAgentId: agent.id,
-      limit: 50,
-      sortField: "updated",
-      sortDir: "desc",
-    }),
-    enabled: Boolean(companyId),
-  });
-
-  const interactionQueries = useQueries({
-    queries: decisionIssues.map((issue) => ({
-      queryKey: queryKeys.issues.interactions(issue.id),
-      queryFn: () => issuesApi.listInteractions(issue.id),
-      enabled: Boolean(companyId),
-    })),
-  });
-
-  const rows = decisionIssues.flatMap((issue, index) => {
-    const interaction = [...(interactionQueries[index]?.data ?? [])]
-      .filter(isPendingOpportunityDecisionInteraction)
-      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
-    return interaction ? [{ issue, interaction }] : [];
-  });
-  const loadingInteractions = interactionQueries.some((query) => query.isLoading);
-
-  const answerDecision = useMutation({
-    mutationFn: (input: {
-      issue: Issue;
-      interaction: AskUserQuestionsInteraction;
-      answers: AskUserQuestionsAnswer[];
-    }) => issuesApi.respondToInteraction(input.issue.id, input.interaction.id, { answers: input.answers }),
-    onSuccess: (_resolved, input) => {
-      queryClient.invalidateQueries({ queryKey: decisionIssuesQueryKey });
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(input.issue.id) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.interactions(input.issue.id) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(input.issue.id) });
-    },
-  });
-
-  if (!issuesLoading && !loadingInteractions && rows.length === 0) return null;
-
-  return (
-    <div>
-      <h3 className="mb-3 text-sm font-medium">Opportunity decisions</h3>
-      <div className="space-y-4">
-        {issuesLoading || loadingInteractions ? (
-          <div className="space-y-3">
-            <Skeleton className="h-20 w-full rounded-md" />
-            <Skeleton className="h-20 w-full rounded-md" />
-          </div>
-        ) : (
-          rows.map(({ issue, interaction }) => (
-            <div key={interaction.id} className="space-y-3">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <Link
-                  to={`${companyPrefix ? `/${companyPrefix}` : ""}/issues/${issue.identifier ?? issue.id}`}
-                  className="min-w-0 text-sm font-semibold text-foreground hover:underline"
-                >
-                  {issue.identifier ? `${issue.identifier} · ` : ""}
-                  {issue.title}
-                </Link>
-                <Badge variant="outline" className="shrink-0">In Review</Badge>
-              </div>
-              <IssueThreadInteractionCard
-                interaction={interaction}
-                onSubmitInteractionAnswers={async (current, answers) => {
-                  await answerDecision.mutateAsync({
-                    issue,
-                    interaction: current,
-                    answers,
-                  });
-                }}
-              />
-            </div>
-          ))
-        )}
-      </div>
-    </div>
-  );
-}
-
 function ConfigurationTab({
   agent,
   companyId,
@@ -2308,9 +2188,6 @@ function ConfigurationTab({
         content={content}
         sectionLayout="cards"
       />
-      {content === "configuration" ? (
-        <OpportunityDecisionPanel agent={agent} companyId={companyId} />
-      ) : null}
       {content === "configuration" ? (
         <p className="text-xs text-muted-foreground">
           Saved adapter config affects the next run. Active runs keep the config they started with, and config changes may start a fresh adapter session.

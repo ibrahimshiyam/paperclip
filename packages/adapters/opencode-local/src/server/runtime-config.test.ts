@@ -99,6 +99,34 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     await prepared.cleanup();
   });
 
+  it("injects built-in DGX local providers for configured local models", async () => {
+    const configHome = await makeConfigHome({ permission: { read: "allow" } });
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome },
+      config: {
+        model: "dgx-qwen/qwen2.5-7b-instruct",
+        dangerouslySkipPermissions: false,
+      },
+      taskWorkspaceCommandPolicy: "default",
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+
+    const runtimeConfig = JSON.parse(
+      await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
+    ) as {
+      provider?: Record<string, {
+        options?: Record<string, unknown>;
+        models?: Record<string, unknown>;
+      }>;
+    };
+
+    expect(runtimeConfig.provider?.dgx?.options?.baseURL).toBe("http://100.80.129.16:8083/v1");
+    expect(runtimeConfig.provider?.dgx?.models?.["gpt-oss-120b-mxfp4"]).toBeDefined();
+    expect(runtimeConfig.provider?.["dgx-qwen"]?.options?.baseURL).toBe("http://100.80.129.16:8084/v1");
+    expect(runtimeConfig.provider?.["dgx-qwen"]?.models?.["qwen2.5-7b-instruct"]).toBeDefined();
+    await prepared.cleanup();
+  });
+
   it("reads PAPERCLIP_OPENCODE_PROVIDERS from process.env when absent from the run env", async () => {
     const configHome = await makeConfigHome({ permission: { read: "allow" } });
     const providers = { bifrost: { npm: "@ai-sdk/openai-compatible", models: { "example/model-a": {} } } };
