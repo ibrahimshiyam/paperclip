@@ -824,6 +824,111 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     })).rejects.toThrow("Interaction has already been resolved");
   });
 
+  it("cancels in-review opportunities when their next-step answer is reject_archive", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Rejected opportunity review");
+    await db.update(issues).set({ status: "in_review" }).where(eq(issues.id, issueId));
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "ask_user_questions",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        title: "Opportunity decision",
+        questions: [{
+          id: "next_step",
+          prompt: "What should happen next?",
+          selectionMode: "single",
+          required: true,
+          options: [
+            { id: "prepare_application", label: "PREPARE APPLICATION" },
+            { id: "monitor", label: "MONITOR" },
+            { id: "reject_archive", label: "REJECT/ARCHIVE" },
+            { id: "request_more_research", label: "REQUEST MORE RESEARCH" },
+          ],
+        }],
+      },
+    }, {
+      userId: "local-board",
+    });
+
+    const answered = await interactionsSvc.answerQuestions({
+      id: issueId,
+      companyId,
+    }, created.id, {
+      answers: [{ questionId: "next_step", optionIds: ["reject_archive"] }],
+    }, {
+      userId: "local-board",
+    });
+
+    expect(answered.status).toBe("answered");
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issue.status).toBe("cancelled");
+    expect(issue.cancelledAt).toBeInstanceOf(Date);
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        authorType: "system",
+        body: expect.stringContaining("Not pursuing. Rejected from In Review"),
+      }),
+    ]));
+  });
+
+  it("moves in-review opportunities back to active follow-through for non-terminal next-step answers", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Opportunity follow-through");
+    await db.update(issues).set({ status: "in_review" }).where(eq(issues.id, issueId));
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "ask_user_questions",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        title: "Opportunity decision",
+        questions: [{
+          id: "next_step",
+          prompt: "What should happen next?",
+          selectionMode: "single",
+          required: true,
+          options: [
+            { id: "prepare_application", label: "PREPARE APPLICATION" },
+            { id: "monitor", label: "MONITOR" },
+            { id: "reject_archive", label: "REJECT/ARCHIVE" },
+            { id: "request_more_research", label: "REQUEST MORE RESEARCH" },
+          ],
+        }],
+      },
+    }, {
+      userId: "local-board",
+    });
+
+    await interactionsSvc.answerQuestions({
+      id: issueId,
+      companyId,
+    }, created.id, {
+      answers: [{ questionId: "next_step", optionIds: ["prepare_application"] }],
+    }, {
+      userId: "local-board",
+    });
+
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issue.status).toBe("in_progress");
+    expect(issue.cancelledAt).toBeNull();
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        authorType: "system",
+        body: "Review decision recorded: prepare_application. Moving out of In Review for assignee follow-through.",
+      }),
+    ]));
+  });
+
   it("persists cancelled ask_user_questions interactions without answer data", async () => {
     const companyId = randomUUID();
     const goalId = randomUUID();

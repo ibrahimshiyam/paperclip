@@ -11695,10 +11695,11 @@ export function issueRoutes(
         },
       });
 
+      const wakeIssue = await svc.getById(issue.id) ?? issue;
       await queueResolvedInteractionContinuationWakeup({
         db,
         heartbeat,
-        issue,
+        issue: wakeIssue,
         interaction,
         actor,
         source: "issue.interaction.respond",

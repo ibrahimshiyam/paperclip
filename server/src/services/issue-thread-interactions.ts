@@ -342,7 +342,7 @@ async function cancelIssueForRejectedReviewDecision(
   issue: IssueResolutionContext,
   actor: InteractionActor,
   reason: string | null,
-  source: "request_confirmation_rejected" | "request_item_verdict_rejected",
+  source: "request_confirmation_rejected" | "request_item_verdict_rejected" | "ask_user_questions_reject_archive",
 ) {
   if (!shouldCancelIssueForRejectedReviewDecision(issue)) return null;
 
@@ -382,6 +382,64 @@ async function cancelIssueForRejectedReviewDecision(
   });
 
   return updated;
+}
+
+const OPPORTUNITY_REVIEW_NEXT_STEP_QUESTION_ID = "next_step";
+const OPPORTUNITY_REVIEW_REJECT_OPTION_ID = "reject_archive";
+const OPPORTUNITY_REVIEW_CONTINUE_OPTION_IDS = new Set([
+  "prepare_application",
+  "monitor",
+  "request_more_research",
+]);
+
+function getOpportunityReviewNextStepAnswer(answers: AskUserQuestionsAnswer[]) {
+  const answer = answers.find((entry) => entry.questionId === OPPORTUNITY_REVIEW_NEXT_STEP_QUESTION_ID);
+  if (!answer || answer.optionIds.length !== 1) return null;
+  return answer.optionIds[0] ?? null;
+}
+
+async function applyAnsweredQuestionLifecycleEffects(
+  tx: Db,
+  issue: IssueResolutionContext,
+  answers: AskUserQuestionsAnswer[],
+  actor: InteractionActor,
+) {
+  if (issue.status !== "in_review") return false;
+
+  const selectedNextStep = getOpportunityReviewNextStepAnswer(answers);
+  if (!selectedNextStep) return false;
+
+  if (selectedNextStep === OPPORTUNITY_REVIEW_REJECT_OPTION_ID) {
+    await cancelIssueForRejectedReviewDecision(
+      tx,
+      issue,
+      actor,
+      "Reviewer selected REJECT/ARCHIVE.",
+      "ask_user_questions_reject_archive",
+    );
+    return true;
+  }
+
+  if (!OPPORTUNITY_REVIEW_CONTINUE_OPTION_IDS.has(selectedNextStep)) return false;
+
+  const updated = await issueService(tx).update(issue.id, {
+    status: "in_progress",
+    actorAgentId: actor.agentId ?? null,
+    actorUserId: actor.userId ?? null,
+  }, tx);
+  if (!updated) throw notFound("Issue not found");
+
+  await issueService(tx).addComment(
+    issue.id,
+    `Review decision recorded: ${selectedNextStep}. Moving out of In Review for assignee follow-through.`,
+    {
+      runId: actor.runId ?? null,
+    },
+    { authorType: "system" },
+    tx,
+  );
+
+  return true;
 }
 
 async function assertRequestConfirmationResolutionAllowedUnderLock(
@@ -3402,56 +3460,88 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       actor: InteractionActor,
     ) => {
       assertIssueOpenForInteractionResolution(issue);
-      const current = await db
-        .select()
-        .from(issueThreadInteractions)
-        .where(eq(issueThreadInteractions.id, interactionId))
-        .then((rows) => rows[0] ?? null);
+      const updated = await db.transaction(async (tx) => {
+        const issueContext = await tx
+          .select({
+            id: issues.id,
+            companyId: issues.companyId,
+            status: issues.status,
+            assigneeAgentId: issues.assigneeAgentId,
+            assigneeUserId: issues.assigneeUserId,
+            reviewPolicy: issues.reviewPolicy,
+            createdByAgentId: issues.createdByAgentId,
+            createdByUserId: issues.createdByUserId,
+          })
+          .from(issues)
+          .where(eq(issues.id, issue.id))
+          .for("update")
+          .then((rows: IssueResolutionContext[]) => rows[0] ?? null);
+        if (!issueContext || issueContext.companyId !== issue.companyId) {
+          throw notFound("Issue not found");
+        }
 
-      if (!current) throw interactionNotFoundError();
-      if (current.companyId !== issue.companyId || current.issueId !== issue.id) {
-        throw interactionNotFoundError();
-      }
-      assertInteractionResolutionAllowed(current, actor);
-      if (current.kind !== "ask_user_questions") {
-        throw unprocessable("Only ask_user_questions interactions can be answered");
-      }
-      if (current.status !== "pending") {
-        throw interactionTerminalError(current);
-      }
+        const current = await tx
+          .select()
+          .from(issueThreadInteractions)
+          .where(eq(issueThreadInteractions.id, interactionId))
+          .for("update")
+          .then((rows) => rows[0] ?? null);
 
-      const interaction = hydrateInteraction(current) as AskUserQuestionsInteraction;
-      const normalizedAnswers = normalizeQuestionAnswers({
-        questions: interaction.payload.questions,
-        answers: input.answers,
+        if (!current) throw interactionNotFoundError();
+        if (current.companyId !== issue.companyId || current.issueId !== issue.id) {
+          throw interactionNotFoundError();
+        }
+        assertInteractionResolutionAllowed(current, actor);
+        if (current.kind !== "ask_user_questions") {
+          throw unprocessable("Only ask_user_questions interactions can be answered");
+        }
+        if (current.status !== "pending") {
+          throw interactionTerminalError(current);
+        }
+
+        const interaction = hydrateInteraction(current) as AskUserQuestionsInteraction;
+        const normalizedAnswers = normalizeQuestionAnswers({
+          questions: interaction.payload.questions,
+          answers: input.answers,
+        });
+
+        const [resolved] = await tx
+          .update(issueThreadInteractions)
+          .set({
+            status: "answered",
+            result: {
+              version: 1,
+              answers: normalizedAnswers,
+              summaryMarkdown: input.summaryMarkdown ?? null,
+            },
+            resolvedByAgentId: actor.agentId ?? null,
+            resolvedByRunId: actor.runId ?? null,
+            resolvedByUserId: actor.userId ?? null,
+            resolvedAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(and(
+            eq(issueThreadInteractions.id, interactionId),
+            eq(issueThreadInteractions.status, "pending"),
+          ))
+          .returning();
+
+        if (!resolved) {
+          throw interactionAlreadyResolvedError();
+        }
+
+        const appliedLifecycleEffect = await applyAnsweredQuestionLifecycleEffects(
+          tx as unknown as Db,
+          issueContext,
+          normalizedAnswers,
+          actor,
+        );
+        if (!appliedLifecycleEffect) {
+          await touchIssue(tx, issue.id);
+        }
+        return resolved;
       });
 
-      const [updated] = await db
-        .update(issueThreadInteractions)
-        .set({
-          status: "answered",
-          result: {
-            version: 1,
-            answers: normalizedAnswers,
-            summaryMarkdown: input.summaryMarkdown ?? null,
-          },
-          resolvedByAgentId: actor.agentId ?? null,
-          resolvedByRunId: actor.runId ?? null,
-          resolvedByUserId: actor.userId ?? null,
-          resolvedAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .where(and(
-          eq(issueThreadInteractions.id, interactionId),
-          eq(issueThreadInteractions.status, "pending"),
-        ))
-        .returning();
-
-      if (!updated) {
-        throw interactionAlreadyResolvedError();
-      }
-
-      await touchIssue(db, issue.id);
       const answered = hydrateInteraction(updated);
       await emitInteractionResolvedTelemetry(db, answered);
       return answered;
