@@ -55,7 +55,7 @@ export function isValidOpenCodeModelId(value: unknown): value is string {
 
 export const models: Array<{ id: string; label: string }> = [
   { id: "dgx/gpt-oss-120b-mxfp4", label: "DGX GPT-OSS 120B MXFP4" },
-  { id: "dgx-qwen/qwen2.5-7b-instruct", label: "DGX Qwen 2.5 7B Instruct" },
+  { id: "dgx-qwen/qwen2.5-7b-instruct-q4-k-m", label: "DGX Qwen 2.5 7B Instruct Q4_K_M GGUF" },
   { id: DEFAULT_OPENCODE_LOCAL_MODEL, label: DEFAULT_OPENCODE_LOCAL_MODEL },
   { id: "openai/gpt-5.5", label: "openai/gpt-5.5" },
   { id: "openai/gpt-5.4", label: "openai/gpt-5.4" },

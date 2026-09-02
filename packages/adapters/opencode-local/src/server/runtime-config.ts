@@ -25,13 +25,13 @@ const DEFAULT_LOCAL_OPENCODE_PROVIDERS: Record<string, unknown> = {
   },
   "dgx-qwen": {
     npm: "@ai-sdk/openai-compatible",
-    name: "DGX Qwen",
+    name: "DGX Qwen Q4",
     options: {
       baseURL: "http://100.80.129.16:8084/v1",
       apiKey: "EMPTY",
     },
     models: {
-      "qwen2.5-7b-instruct": { name: "Qwen 2.5 7B Instruct" },
+      "qwen2.5-7b-instruct-q4-k-m": { name: "Qwen 2.5 7B Instruct Q4_K_M GGUF" },
     },
   },
 };

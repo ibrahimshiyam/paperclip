@@ -22,7 +22,7 @@ describe("openCode models", () => {
     await expect(listOpenCodeModels()).resolves.toEqual(
       expect.arrayContaining([
         { id: "dgx/gpt-oss-120b-mxfp4", label: "DGX GPT-OSS 120B MXFP4" },
-        { id: "dgx-qwen/qwen2.5-7b-instruct", label: "DGX Qwen 2.5 7B Instruct" },
+        { id: "dgx-qwen/qwen2.5-7b-instruct-q4-k-m", label: "DGX Qwen 2.5 7B Instruct Q4_K_M GGUF" },
       ]),
     );
   });
@@ -122,7 +122,7 @@ describe("openCode models", () => {
     await expect(promise).resolves.toEqual(
       expect.arrayContaining([
         { id: "dgx/gpt-oss-120b-mxfp4", label: "DGX GPT-OSS 120B MXFP4" },
-        { id: "dgx-qwen/qwen2.5-7b-instruct", label: "DGX Qwen 2.5 7B Instruct" },
+        { id: "dgx-qwen/qwen2.5-7b-instruct-q4-k-m", label: "DGX Qwen 2.5 7B Instruct Q4_K_M GGUF" },
         { id: "ollama/qwen2.5-coder:7b", label: "ollama/qwen2.5-coder:7b" },
       ]),
     );

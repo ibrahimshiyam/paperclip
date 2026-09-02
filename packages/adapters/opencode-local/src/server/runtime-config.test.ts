@@ -104,7 +104,7 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     const prepared = await prepareOpenCodeRuntimeConfig({
       env: { XDG_CONFIG_HOME: configHome },
       config: {
-        model: "dgx-qwen/qwen2.5-7b-instruct",
+        model: "dgx-qwen/qwen2.5-7b-instruct-q4-k-m",
         dangerouslySkipPermissions: false,
       },
       taskWorkspaceCommandPolicy: "default",
@@ -123,7 +123,7 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     expect(runtimeConfig.provider?.dgx?.options?.baseURL).toBe("http://100.80.129.16:8083/v1");
     expect(runtimeConfig.provider?.dgx?.models?.["gpt-oss-120b-mxfp4"]).toBeDefined();
     expect(runtimeConfig.provider?.["dgx-qwen"]?.options?.baseURL).toBe("http://100.80.129.16:8084/v1");
-    expect(runtimeConfig.provider?.["dgx-qwen"]?.models?.["qwen2.5-7b-instruct"]).toBeDefined();
+    expect(runtimeConfig.provider?.["dgx-qwen"]?.models?.["qwen2.5-7b-instruct-q4-k-m"]).toBeDefined();
     await prepared.cleanup();
   });
 
