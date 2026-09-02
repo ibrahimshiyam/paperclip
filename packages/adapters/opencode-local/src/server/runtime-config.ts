@@ -31,6 +31,8 @@ const TASK_WORKSPACE_HELPER_ONLY_BASH_PERMISSION_RULES: [string, string][] = [
   ["echo * > *", "deny"],
   ["printf * > *", "deny"],
   ["tee *", "deny"],
+  ["curl *$PAPERCLIP_API_URL/api/issues*", "allow"],
+  ["curl *$PAPERCLIP_API_URL/api/companies/*/issues*", "allow"],
   ["task_workspace.py *", "allow"],
   ["python task_workspace.py *", "allow"],
   ["python3 task_workspace.py *", "allow"],
@@ -224,7 +226,7 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   }
   if (taskWorkspaceCommandPolicy === "helper_only") {
     notes.push(
-      "Injected task workspace helper-only shell policy: use task_workspace.py for workspace reads, searches, lists, and writes.",
+      "Injected task workspace helper-only shell policy: use task_workspace.py for workspace reads, searches, lists, and writes; Paperclip issue API curl calls remain available for sanctioned task updates and delegation.",
     );
   }
 

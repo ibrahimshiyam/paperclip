@@ -356,6 +356,8 @@ describe("prepareOpenCodeRuntimeConfig", () => {
       "echo * > *": "deny",
       "printf * > *": "deny",
       "tee *": "deny",
+      "curl *$PAPERCLIP_API_URL/api/issues*": "allow",
+      "curl *$PAPERCLIP_API_URL/api/companies/*/issues*": "allow",
       "task_workspace.py *": "allow",
       "python task_workspace.py *": "allow",
       "python3 task_workspace.py *": "allow",
@@ -363,7 +365,7 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     });
     expect(runtimeConfig.permission?.bash).not.toHaveProperty("git status*");
     expect(prepared.notes).toContain(
-      "Injected task workspace helper-only shell policy: use task_workspace.py for workspace reads, searches, lists, and writes.",
+      "Injected task workspace helper-only shell policy: use task_workspace.py for workspace reads, searches, lists, and writes; Paperclip issue API curl calls remain available for sanctioned task updates and delegation.",
     );
     await prepared.cleanup();
   });
@@ -405,11 +407,13 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     expect(runtimeConfig.permission?.bash).toMatchObject({
       "*": "deny",
       "cat *": "deny",
+      "curl *$PAPERCLIP_API_URL/api/issues*": "allow",
+      "curl *$PAPERCLIP_API_URL/api/companies/*/issues*": "allow",
       "task_workspace.py *": "allow",
       "*/task_workspace.py *": "allow",
     });
     expect(prepared.notes).toEqual([
-      "Injected task workspace helper-only shell policy: use task_workspace.py for workspace reads, searches, lists, and writes.",
+      "Injected task workspace helper-only shell policy: use task_workspace.py for workspace reads, searches, lists, and writes; Paperclip issue API curl calls remain available for sanctioned task updates and delegation.",
     ]);
     await prepared.cleanup();
   });
@@ -439,6 +443,8 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     };
     expect(content.permission?.bash).toMatchObject({
       "*": "deny",
+      "curl *$PAPERCLIP_API_URL/api/issues*": "allow",
+      "curl *$PAPERCLIP_API_URL/api/companies/*/issues*": "allow",
       "task_workspace.py *": "allow",
       "*/task_workspace.py *": "allow",
     });
@@ -462,6 +468,8 @@ describe("prepareOpenCodeRuntimeConfig", () => {
 
     expect(runtimeConfig.permission?.bash).toMatchObject({
       "*": "deny",
+      "curl *$PAPERCLIP_API_URL/api/issues*": "allow",
+      "curl *$PAPERCLIP_API_URL/api/companies/*/issues*": "allow",
       "task_workspace.py *": "allow",
     });
     expect(runtimeConfig.permission?.bash).not.toHaveProperty("curl *");
