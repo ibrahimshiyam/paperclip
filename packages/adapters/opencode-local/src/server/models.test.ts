@@ -17,9 +17,14 @@ describe("openCode models", () => {
     vi.useRealTimers();
   });
 
-  it("returns an empty list when discovery command is unavailable", async () => {
+  it("returns built-in OpenCode choices when discovery command is unavailable", async () => {
     process.env.PAPERCLIP_OPENCODE_COMMAND = "__paperclip_missing_opencode_command__";
-    await expect(listOpenCodeModels()).resolves.toEqual([]);
+    await expect(listOpenCodeModels()).resolves.toEqual(
+      expect.arrayContaining([
+        { id: "dgx/gpt-oss-120b-mxfp4", label: "DGX GPT-OSS 120B MXFP4" },
+        { id: "dgx-qwen/qwen2.5-7b-instruct", label: "DGX Qwen 2.5 7B Instruct" },
+      ]),
+    );
   });
 
   it("rejects when model is missing", async () => {
@@ -114,9 +119,13 @@ describe("openCode models", () => {
     const promise = discoverOpenCodeModels();
     await vi.runAllTimersAsync();
 
-    await expect(promise).resolves.toEqual([
-      { id: "ollama/qwen2.5-coder:7b", label: "ollama/qwen2.5-coder:7b" },
-    ]);
+    await expect(promise).resolves.toEqual(
+      expect.arrayContaining([
+        { id: "dgx/gpt-oss-120b-mxfp4", label: "DGX GPT-OSS 120B MXFP4" },
+        { id: "dgx-qwen/qwen2.5-7b-instruct", label: "DGX Qwen 2.5 7B Instruct" },
+        { id: "ollama/qwen2.5-coder:7b", label: "ollama/qwen2.5-coder:7b" },
+      ]),
+    );
     expect(spy).toHaveBeenCalledTimes(3);
   });
 

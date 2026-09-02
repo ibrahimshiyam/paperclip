@@ -6,7 +6,7 @@ import {
   ensurePathInEnv,
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
-import { isValidOpenCodeModelId } from "../index.js";
+import { isValidOpenCodeModelId, models as builtInOpenCodeModels } from "../index.js";
 
 const MODELS_CACHE_TTL_MS = 60_000;
 const MODELS_DISCOVERY_TIMEOUT_MS = 20_000;
@@ -57,6 +57,10 @@ function sortModels(models: AdapterModel[]): AdapterModel[] {
   return [...models].sort((a, b) =>
     a.id.localeCompare(b.id, "en", { numeric: true, sensitivity: "base" }),
   );
+}
+
+function mergeBuiltInModels(models: AdapterModel[]): AdapterModel[] {
+  return sortModels(dedupeModels([...models, ...builtInOpenCodeModels]));
 }
 
 function firstNonEmptyLine(text: string): string {
@@ -164,7 +168,7 @@ export async function discoverOpenCodeModels(input: {
       const detail = firstNonEmptyLine(result.stderr) || firstNonEmptyLine(result.stdout);
       lastError = new Error(detail ? `\`opencode models\` failed: ${detail}` : "`opencode models` failed.");
     } else {
-      return sortModels(parseOpenCodeModelsOutput(result.stdout));
+      return mergeBuiltInModels(parseOpenCodeModelsOutput(result.stdout));
     }
 
     const delayMs = MODELS_DISCOVERY_RETRY_DELAYS_MS[attempt - 1];
@@ -263,7 +267,7 @@ export async function listOpenCodeModels(): Promise<AdapterModel[]> {
   try {
     return await discoverOpenCodeModelsCached();
   } catch {
-    return [];
+    return mergeBuiltInModels([]);
   }
 }
 
