@@ -1651,8 +1651,9 @@ export function renderPaperclipWakePrompt(
       case "process_lost":
         return `Your previous run on this issue was lost (${recovery.failureSummary ?? "no failure summary available"}). Try again — resume from durable progress; don't redo completed steps. Do not narrate the recovery in your next comment — at most one short sentence; lead with the work.`;
       case "successful_run_missing_state":
-      case "successful_run_missing_issue_disposition":
         return "Your run completed but left no final disposition. Inspect the issue summary, post one concise state comment, and set the correct disposition. Use `done` only for completed work, `in_review` only with a real review path, `blocked` only for a genuine external blocker, or `todo` when work remains but no process is live. Do not start or continue deliverable work.";
+      case "successful_run_missing_issue_disposition":
+        return "Your run completed but left no required issue disposition. Inspect the issue summary and record a first-class Paperclip disposition before ending. For an opportunity that needs a user choice, create one `ask_user_questions` interaction on the issue with question id `next_step` and options `prepare_application` (PREPARE APPLICATION), `monitor` (MONITOR), `reject_archive` (REJECT/ARCHIVE), and `request_more_research` (REQUEST MORE RESEARCH), then set the issue to `in_review`. If no user choice is needed, set a truthful terminal or waiting status directly: `done` only for completed work, `blocked` only for a genuine external blocker with owner/action, or `todo` only when work remains but no process is live. A comment alone is not a disposition. Do not apply, bid, message, email, contact clients, spend credits, or perform external irreversible actions.";
       case "provider_quota":
         return "Verify or create the wait-recovery monitor for the provider quota reset, then stop. Do not take over the task.";
       case "codex_output_inactivity_monitor":

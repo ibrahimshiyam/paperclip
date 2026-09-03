@@ -781,7 +781,7 @@ describe("runChildProcess", () => {
 });
 
 describe("renderPaperclipWakePrompt", () => {
-  it("directs missing-disposition recovery to Todo when unfinished work has no live path", () => {
+  it("directs missing-disposition recovery to create a structured review path", () => {
     const prompt = renderPaperclipWakePrompt({
       reason: "issue_continuation_needed",
       issue: { id: "issue-1", identifier: "PAP-1", title: "Recover status", status: "in_progress" },
@@ -791,8 +791,14 @@ describe("renderPaperclipWakePrompt", () => {
       fallbackFetchNeeded: false,
     });
 
-    expect(prompt).toContain("`todo` when work remains but no process is live");
-    expect(prompt).toContain("Do not start or continue deliverable work.");
+    expect(prompt).toContain("create one `ask_user_questions` interaction");
+    expect(prompt).toContain("question id `next_step`");
+    expect(prompt).toContain("`prepare_application` (PREPARE APPLICATION)");
+    expect(prompt).toContain("`monitor` (MONITOR)");
+    expect(prompt).toContain("`reject_archive` (REJECT/ARCHIVE)");
+    expect(prompt).toContain("`request_more_research` (REQUEST MORE RESEARCH)");
+    expect(prompt).toContain("A comment alone is not a disposition.");
+    expect(prompt).toContain("Do not apply, bid, message, email, contact clients, spend credits");
   });
 
   it("preserves and renders the issue description in structured wake payloads", () => {
