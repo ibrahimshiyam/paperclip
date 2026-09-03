@@ -1882,6 +1882,109 @@ describe.sequential("issue thread interaction routes", () => {
     );
   });
 
+  it("allows agent-authored next-step question interactions for required issue dispositions", async () => {
+    mockInteractionService.create.mockResolvedValueOnce({
+      id: "interaction-next-step",
+      companyId: "company-1",
+      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      kind: "ask_user_questions",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      requestedResolverPolicy: "human_only",
+      effectiveResolverPolicy: "human_only",
+      resolverPolicyProvenance: "explicit",
+      effectiveResolverPolicySource: "requested",
+      idempotencyKey: "opportunity-review:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      sourceCommentId: null,
+      sourceRunId: RUN_1,
+      title: "Choose the next step for this opportunity",
+      summary: "Review the published qualification dossier before deciding.",
+      createdByAgentId: CREATED_AGENT_ID,
+      addresseeAgentId: null,
+      createdByUserId: null,
+      resolvedByAgentId: null,
+      resolvedByRunId: null,
+      resolvedByUserId: null,
+      payload: {
+        version: 1,
+        title: "Opportunity decision",
+        submitLabel: "Confirm decision",
+        supersedeOnUserComment: false,
+        questions: [{
+          id: "next_step",
+          prompt: "What should happen next?",
+          selectionMode: "single",
+          required: true,
+          options: [
+            { id: "prepare_application", label: "PREPARE APPLICATION" },
+            { id: "monitor", label: "MONITOR" },
+            { id: "reject_archive", label: "REJECT/ARCHIVE" },
+            { id: "request_more_research", label: "REQUEST MORE RESEARCH" },
+          ],
+        }],
+      },
+      result: null,
+      resolvedAt: null,
+      createdAt: "2026-04-20T12:00:00.000Z",
+      updatedAt: "2026-04-20T12:00:00.000Z",
+    });
+    const app = await createApp({
+      type: "agent",
+      agentId: CREATED_AGENT_ID,
+      companyId: "company-1",
+      runId: RUN_1,
+    });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions")
+      .send({
+        kind: "ask_user_questions",
+        idempotencyKey: "opportunity-review:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        resolverPolicy: "human_only",
+        continuationPolicy: "wake_assignee",
+        title: "Choose the next step for this opportunity",
+        summary: "Review the published qualification dossier before deciding.",
+        payload: {
+          version: 1,
+          title: "Opportunity decision",
+          submitLabel: "Confirm decision",
+          supersedeOnUserComment: false,
+          questions: [{
+            id: "next_step",
+            prompt: "What should happen next?",
+            selectionMode: "single",
+            required: true,
+            options: [
+              { id: "prepare_application", label: "PREPARE APPLICATION" },
+              { id: "monitor", label: "MONITOR" },
+              { id: "reject_archive", label: "REJECT/ARCHIVE" },
+              { id: "request_more_research", label: "REQUEST MORE RESEARCH" },
+            ],
+          }],
+        },
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockInteractionService.create).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }),
+      expect.objectContaining({
+        kind: "ask_user_questions",
+        idempotencyKey: "opportunity-review:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        resolverPolicy: "human_only",
+        continuationPolicy: "wake_assignee",
+        sourceRunId: RUN_1,
+        payload: expect.objectContaining({
+          questions: [expect.objectContaining({ id: "next_step" })],
+        }),
+      }),
+      {
+        agentId: CREATED_AGENT_ID,
+        userId: null,
+      },
+    );
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
   it("allows a different in-scope agent run to respond when policy permits", async () => {
     mockIssueService.getById.mockResolvedValueOnce(createIssue({ status: "todo" }));
     const app = await createApp({
