@@ -1,5 +1,5 @@
 import { createHmac, randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -2505,6 +2505,30 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     const scheduleAfter = await db.select().from(routineTriggers).where(eq(routineTriggers.id, scheduleTrigger.id)).then((rows) => rows[0]);
     expect(scheduleAfter!.nextRunAt!.getTime()).toBeGreaterThan(pastDue.getTime());
     expect((await db.select().from(issues).where(eq(issues.companyId, companyId))).filter((issue) => issue.originKind === "routine_execution")).toHaveLength(1);
+  });
+
+  it("claims due schedule triggers stored with sub-millisecond database precision", async () => {
+    const { routine, svc, wakeups } = await seedFixture();
+    const { trigger } = await svc.createTrigger(
+      routine.id,
+      { kind: "schedule", cronExpression: "0 0 * * *", timezone: "UTC" },
+      {},
+    );
+
+    await db.execute(sql`
+      update ${routineTriggers}
+      set ${routineTriggers.nextRunAt} = '2026-07-16 00:00:00.123456+00'::timestamptz
+      where ${routineTriggers.id} = ${trigger.id}
+    `);
+
+    expect(await svc.tickScheduledTriggers(new Date("2026-07-16T01:00:00.000Z"))).toEqual({ triggered: 1 });
+
+    const [updatedTrigger] = await db
+      .select()
+      .from(routineTriggers)
+      .where(eq(routineTriggers.id, trigger.id));
+    expect(updatedTrigger!.nextRunAt).toEqual(new Date("2026-07-17T00:00:00.000Z"));
+    expect(wakeups).toHaveLength(1);
   });
 
   it("dispatches only post-cutoff scheduled routines in an armed worktree", async () => {

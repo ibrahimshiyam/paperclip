@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lte, ne, not, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lt, lte, ne, not, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -3175,6 +3175,7 @@ export function routineService(
           }
         }
 
+        const selectedNextRunAtClaimCeiling = new Date(row.trigger.nextRunAt.getTime() + 1);
         const claimed = await db
           .update(routineTriggers)
           .set({
@@ -3185,7 +3186,8 @@ export function routineService(
             and(
               eq(routineTriggers.id, row.trigger.id),
               eq(routineTriggers.enabled, true),
-              eq(routineTriggers.nextRunAt, row.trigger.nextRunAt),
+              lte(routineTriggers.nextRunAt, now),
+              lt(routineTriggers.nextRunAt, selectedNextRunAtClaimCeiling),
             ),
           )
           .returning({ id: routineTriggers.id })
