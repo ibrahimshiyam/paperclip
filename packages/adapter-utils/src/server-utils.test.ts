@@ -971,6 +971,8 @@ describe("renderPaperclipWakePrompt", () => {
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Use child issues");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("instead of polling agents, sessions, or processes");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("use the approved `task_workspace.py` commands");
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("write-base64 <file> <base64-content>");
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("do not pass the content as an extra shell argument");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Do not use plain shell file commands such as `cat`");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Create child issues directly when you know what needs to be done");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("POST /api/issues/$PAPERCLIP_TASK_ID/interactions");
@@ -1068,6 +1070,7 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain("Use approved task workspace helper commands such as `task_workspace.py read`");
     expect(prompt).toContain("task_workspace.py read review_state.md");
     expect(prompt).toContain("task_workspace.py read page-4.txt");
+    expect(prompt).toContain("task_workspace.py write-base64 <file> <base64-content>");
     expect(prompt).toContain("do not try plain `cat`");
     expect(prompt).not.toContain("cat review_state.md");
     expect(prompt).not.toContain("cat page-4.txt");
