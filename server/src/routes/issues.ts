@@ -245,7 +245,10 @@ import {
   type IssueThreadInteractionResolverAudienceDecision,
   type IssueThreadInteractionResolverRestriction,
 } from "../services/issue-thread-interaction-resolution.js";
-import { resolveSelectedSuggestedTasks } from "../services/issue-thread-interactions.js";
+import {
+  REVIEW_DECISION_PREPARE_APPLICATION_ORIGIN_KIND,
+  resolveSelectedSuggestedTasks,
+} from "../services/issue-thread-interactions.js";
 import {
   crossIssueInfluenceLimitError,
   crossIssueInfluenceRunContextError,
@@ -2185,6 +2188,38 @@ async function queueResolvedInteractionContinuationWakeup(input: {
     interactionId: input.interaction.id,
     agentId: input.issue.assigneeAgentId,
   }, "failed to wake assignee on issue interaction resolution"));
+}
+
+function isPrepareApplicationNextStepResponse(body: unknown) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return false;
+  const answers = (body as { answers?: unknown }).answers;
+  if (!Array.isArray(answers)) return false;
+  return answers.some((answer) => {
+    if (!answer || typeof answer !== "object" || Array.isArray(answer)) return false;
+    const record = answer as { questionId?: unknown; optionIds?: unknown };
+    return record.questionId === "next_step"
+      && Array.isArray(record.optionIds)
+      && record.optionIds.length === 1
+      && record.optionIds[0] === "prepare_application";
+  });
+}
+
+async function listOpenPrepareApplicationChildren(db: Db, parent: { id: string; companyId: string }) {
+  return db
+    .select({
+      id: issueRows.id,
+      companyId: issueRows.companyId,
+      assigneeAgentId: issueRows.assigneeAgentId,
+      status: issueRows.status,
+    })
+    .from(issueRows)
+    .where(and(
+      eq(issueRows.companyId, parent.companyId),
+      eq(issueRows.parentId, parent.id),
+      eq(issueRows.originKind, REVIEW_DECISION_PREPARE_APPLICATION_ORIGIN_KIND),
+      eq(issueRows.originId, parent.id),
+      notInArray(issueRows.status, ["done", "cancelled"]),
+    ));
 }
 
 function readCheckboxSelectionForWake(input: {
@@ -11704,6 +11739,22 @@ export function issueRoutes(
         actor,
         source: "issue.interaction.respond",
       });
+      if (isPrepareApplicationNextStepResponse(req.body)) {
+        const children = await listOpenPrepareApplicationChildren(db, issue);
+        await Promise.all(children.map((child) =>
+          queueResolvedInteractionContinuationWakeup({
+            db,
+            heartbeat,
+            issue: child,
+            interaction,
+            actor,
+            source: "issue.interaction.respond.prepare_application_child",
+            forceFreshSession: true,
+            workspaceRefreshReason: "prepare_application_review_decision",
+            idempotencyKey: `interaction:${interaction.id}:answered:prepare_application_child:${child.id}`,
+          })
+        ));
+      }
 
       res.json(interaction);
     },

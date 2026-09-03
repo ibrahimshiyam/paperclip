@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import { and, asc, desc, eq, inArray, isNotNull, isNull, ne } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, isNull, ne, notInArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -342,7 +342,11 @@ async function cancelIssueForRejectedReviewDecision(
   issue: IssueResolutionContext,
   actor: InteractionActor,
   reason: string | null,
-  source: "request_confirmation_rejected" | "request_item_verdict_rejected" | "ask_user_questions_reject_archive",
+  source:
+    | "request_confirmation_rejected"
+    | "request_item_verdict_rejected"
+    | "ask_user_questions_reject_archive"
+    | "ask_user_questions_application_package_decline",
 ) {
   if (!shouldCancelIssueForRejectedReviewDecision(issue)) return null;
 
@@ -385,11 +389,22 @@ async function cancelIssueForRejectedReviewDecision(
 }
 
 const OPPORTUNITY_REVIEW_NEXT_STEP_QUESTION_ID = "next_step";
+const APPLICATION_PACKAGE_DECISION_QUESTION_ID = "application_package_decision";
 const OPPORTUNITY_REVIEW_REJECT_OPTION_ID = "reject_archive";
+const OPPORTUNITY_REVIEW_PREPARE_APPLICATION_OPTION_ID = "prepare_application";
+const APPLICATION_PACKAGE_APPROVE_OPTION_ID = "approve_internal_application_package";
+const APPLICATION_PACKAGE_REQUEST_CHANGES_OPTION_ID = "request_changes";
+const APPLICATION_PACKAGE_DECLINE_OPTION_ID = "decline";
+export const REVIEW_DECISION_PREPARE_APPLICATION_ORIGIN_KIND = "review_decision_prepare_application";
 const OPPORTUNITY_REVIEW_CONTINUE_OPTION_IDS = new Set([
-  "prepare_application",
+  OPPORTUNITY_REVIEW_PREPARE_APPLICATION_OPTION_ID,
   "monitor",
   "request_more_research",
+]);
+const APPLICATION_PACKAGE_DECISION_OPTION_IDS = new Set([
+  APPLICATION_PACKAGE_APPROVE_OPTION_ID,
+  APPLICATION_PACKAGE_REQUEST_CHANGES_OPTION_ID,
+  APPLICATION_PACKAGE_DECLINE_OPTION_ID,
 ]);
 
 function getOpportunityReviewNextStepAnswer(answers: AskUserQuestionsAnswer[]) {
@@ -398,12 +413,158 @@ function getOpportunityReviewNextStepAnswer(answers: AskUserQuestionsAnswer[]) {
   return answer.optionIds[0] ?? null;
 }
 
+function getApplicationPackageDecisionAnswer(answers: AskUserQuestionsAnswer[]) {
+  const answer = answers.find((entry) => entry.questionId === APPLICATION_PACKAGE_DECISION_QUESTION_ID);
+  if (!answer || answer.optionIds.length !== 1) return null;
+  return answer.optionIds[0] ?? null;
+}
+
+async function findApplicationCoordinatorAgent(tx: Db, companyId: string) {
+  return tx
+    .select({
+      id: agents.id,
+      name: agents.name,
+      status: agents.status,
+    })
+    .from(agents)
+    .where(and(eq(agents.companyId, companyId), eq(agents.name, "Application Coordinator")))
+    .orderBy(asc(agents.createdAt), asc(agents.id))
+    .then((rows) => rows.find((row) => row.status !== "pending_approval" && row.status !== "terminated") ?? null);
+}
+
+async function findExistingApplicationPackageChild(tx: Db, issue: IssueResolutionContext) {
+  return tx
+    .select({
+      id: issues.id,
+      identifier: issues.identifier,
+      title: issues.title,
+      status: issues.status,
+      assigneeAgentId: issues.assigneeAgentId,
+      assigneeUserId: issues.assigneeUserId,
+    })
+    .from(issues)
+    .where(and(
+      eq(issues.companyId, issue.companyId),
+      eq(issues.parentId, issue.id),
+      eq(issues.originKind, REVIEW_DECISION_PREPARE_APPLICATION_ORIGIN_KIND),
+      eq(issues.originId, issue.id),
+      notInArray(issues.status, ["done", "cancelled"]),
+    ))
+    .orderBy(asc(issues.createdAt), asc(issues.id))
+    .then((rows) => rows[0] ?? null);
+}
+
+async function createOrReuseApplicationPackageChild(
+  tx: Db,
+  issue: IssueResolutionContext,
+  actor: InteractionActor,
+) {
+  const existing = await findExistingApplicationPackageChild(tx, issue);
+  if (existing) return existing;
+
+  const coordinator = await findApplicationCoordinatorAgent(tx, issue.companyId);
+  if (!coordinator) {
+    await issueService(tx).update(issue.id, {
+      status: "blocked",
+      unblockDescriptor: {
+        owner: "board",
+        action: "Configure an Application Coordinator agent before preparing an internal application package.",
+      },
+      actorAgentId: actor.agentId ?? null,
+      actorUserId: actor.userId ?? null,
+    }, tx);
+    await issueService(tx).addComment(
+      issue.id,
+      "Review decision recorded: prepare_application. Paperclip cannot create the internal application package because this organization has no active Application Coordinator agent.",
+      { runId: actor.runId ?? null },
+      { authorType: "system" },
+      tx,
+    );
+    return null;
+  }
+
+  const description = [
+    "Prepare a concise internal application package for the reviewed opportunity. This is internal preparation only.",
+    "",
+    "Do not submit, apply, contact, message, email, bid, spend credits, or perform any external irreversible action.",
+    "",
+    "The package must include:",
+    "- opportunity summary",
+    "- eligibility evidence",
+    "- skill and evidence gaps, clearly separating missing requirements from unverified evidence",
+    "- tailored positioning",
+    "- required documents and materials",
+    "- draft answers or cover letter where applicable",
+    "- risks and unknowns",
+    "- deadline and source links",
+    "",
+    `When the package is complete, create exactly one structured ask_user_questions interaction with question id ${APPLICATION_PACKAGE_DECISION_QUESTION_ID} and options ${APPLICATION_PACKAGE_APPROVE_OPTION_ID}, ${APPLICATION_PACKAGE_REQUEST_CHANGES_OPTION_ID}, and ${APPLICATION_PACKAGE_DECLINE_OPTION_ID}. Then place this task In Review for the user decision. Do not ask for approval via a plain comment.`,
+  ].join("\n");
+
+  const { issue: child } = await issueService(tx).createChild(issue.id, {
+    title: "Prepare internal application package",
+    description,
+    status: "todo",
+    priority: "medium",
+    assigneeAgentId: coordinator.id,
+    originKind: REVIEW_DECISION_PREPARE_APPLICATION_ORIGIN_KIND,
+    originId: issue.id,
+    originRunId: actor.runId ?? null,
+    actorRunId: actor.runId ?? null,
+    actorAgentId: actor.agentId ?? null,
+    actorUserId: actor.userId ?? null,
+    idempotencyKey: `${REVIEW_DECISION_PREPARE_APPLICATION_ORIGIN_KIND}:${issue.companyId}:${issue.id}`,
+    allowDuplicate: false,
+    blockParentUntilDone: true,
+    executionWorkspaceInheritanceMode: "strategy_only",
+    acceptanceCriteria: [
+      "Contains the opportunity summary, eligibility evidence, gaps, tailored positioning, materials, draft answers or cover letter, risks, deadline, and source links.",
+      "Creates one structured application_package_decision interaction for approve internal package, request changes, or decline.",
+      "Performs no external application, contact, message, email, bid, or spend action.",
+    ],
+  });
+  return child;
+}
+
 async function applyAnsweredQuestionLifecycleEffects(
   tx: Db,
   issue: IssueResolutionContext,
   answers: AskUserQuestionsAnswer[],
   actor: InteractionActor,
 ) {
+  const applicationPackageDecision = getApplicationPackageDecisionAnswer(answers);
+  if (applicationPackageDecision) {
+    if (!APPLICATION_PACKAGE_DECISION_OPTION_IDS.has(applicationPackageDecision)) return false;
+    if (applicationPackageDecision === APPLICATION_PACKAGE_DECLINE_OPTION_ID) {
+      await cancelIssueForRejectedReviewDecision(
+        tx,
+        issue,
+        actor,
+        "Reviewer selected DECLINE for the internal application package.",
+        "ask_user_questions_application_package_decline",
+      );
+      return true;
+    }
+    if (issue.status !== "in_review") return false;
+    const nextStatus = applicationPackageDecision === APPLICATION_PACKAGE_APPROVE_OPTION_ID ? "done" : "in_progress";
+    const updated = await issueService(tx).update(issue.id, {
+      status: nextStatus,
+      actorAgentId: actor.agentId ?? null,
+      actorUserId: actor.userId ?? null,
+    }, tx);
+    if (!updated) throw notFound("Issue not found");
+    await issueService(tx).addComment(
+      issue.id,
+      applicationPackageDecision === APPLICATION_PACKAGE_APPROVE_OPTION_ID
+        ? "Internal application package approved for the next internal step. No external submission/contact action was performed."
+        : "Internal application package changes requested. Returning to the Application Coordinator for revision; no external submission/contact action was performed.",
+      { runId: actor.runId ?? null },
+      { authorType: "system" },
+      tx,
+    );
+    return true;
+  }
+
   const selectedNextStep = getOpportunityReviewNextStepAnswer(answers);
   if (!selectedNextStep) return false;
 
@@ -420,6 +581,30 @@ async function applyAnsweredQuestionLifecycleEffects(
 
   if (issue.status !== "in_review") return false;
   if (!OPPORTUNITY_REVIEW_CONTINUE_OPTION_IDS.has(selectedNextStep)) return false;
+
+  if (selectedNextStep === OPPORTUNITY_REVIEW_PREPARE_APPLICATION_OPTION_ID) {
+    const child = await createOrReuseApplicationPackageChild(tx, issue, actor);
+    if (!child) return true;
+    if (!child.assigneeAgentId) throw unprocessable("Application package child must be assigned to an agent");
+    const updated = await issueService(tx).update(issue.id, {
+      status: "blocked",
+      unblockDescriptor: {
+        owner: { agentId: child.assigneeAgentId },
+        action: "Application Coordinator is preparing the internal application package requested by the recorded PREPARE APPLICATION decision. Wait for the child package; no external submission/contact is authorized.",
+      },
+      actorAgentId: actor.agentId ?? null,
+      actorUserId: actor.userId ?? null,
+    }, tx);
+    if (!updated) throw notFound("Issue not found");
+    await issueService(tx).addComment(
+      issue.id,
+      `Recorded PREPARE APPLICATION follow-through: created/routed internal child task ${child.identifier ?? child.id} for the Application Coordinator. This authorizes preparation of a reviewable application package only; no submission/contact/message/email/bid/spend action is authorized.`,
+      { runId: actor.runId ?? null },
+      { authorType: "system" },
+      tx,
+    );
+    return true;
+  }
 
   const updated = await issueService(tx).update(issue.id, {
     status: "in_progress",

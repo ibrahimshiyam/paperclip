@@ -911,7 +911,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       id: issueId,
       companyId,
     }, created.id, {
-      answers: [{ questionId: "next_step", optionIds: ["prepare_application"] }],
+      answers: [{ questionId: "next_step", optionIds: ["monitor"] }],
     }, {
       userId: "local-board",
     });
@@ -924,7 +924,138 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     expect(comments).toEqual(expect.arrayContaining([
       expect.objectContaining({
         authorType: "system",
-        body: "Review decision recorded: prepare_application. Moving out of In Review for assignee follow-through.",
+        body: "Review decision recorded: monitor. Moving out of In Review for assignee follow-through.",
+      }),
+    ]));
+  });
+
+  it("creates an Application Coordinator child for prepare_application review decisions", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Opportunity package");
+    const applicationCoordinatorId = randomUUID();
+    await db.insert(agents).values({
+      id: applicationCoordinatorId,
+      companyId,
+      name: "Application Coordinator",
+      role: "application_coordinator",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.update(issues).set({ status: "in_review" }).where(eq(issues.id, issueId));
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "ask_user_questions",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        title: "Opportunity decision",
+        questions: [{
+          id: "next_step",
+          prompt: "What should happen next?",
+          selectionMode: "single",
+          required: true,
+          options: [
+            { id: "prepare_application", label: "PREPARE APPLICATION" },
+            { id: "monitor", label: "MONITOR" },
+            { id: "reject_archive", label: "REJECT/ARCHIVE" },
+            { id: "request_more_research", label: "REQUEST MORE RESEARCH" },
+          ],
+        }],
+      },
+    }, {
+      userId: "local-board",
+    });
+
+    await interactionsSvc.answerQuestions({
+      id: issueId,
+      companyId,
+    }, created.id, {
+      answers: [{ questionId: "next_step", optionIds: ["prepare_application"] }],
+    }, {
+      userId: "local-board",
+    });
+
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issue.status).toBe("blocked");
+    expect(issue.unblockDescriptor).toMatchObject({
+      owner: { agentId: applicationCoordinatorId },
+    });
+
+    const [child] = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.parentId, issueId));
+    expect(child).toEqual(expect.objectContaining({
+      status: "todo",
+      assigneeAgentId: applicationCoordinatorId,
+      originKind: "review_decision_prepare_application",
+      originId: issueId,
+    }));
+    expect(child.description).toContain("application_package_decision");
+    expect(child.description).toContain("Do not submit, apply, contact");
+
+    const parentRelations = await db
+      .select()
+      .from(issueRelations)
+      .where(eq(issueRelations.relatedIssueId, issueId));
+    expect(parentRelations).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        issueId: child.id,
+        type: "blocks",
+      }),
+    ]));
+  });
+
+  it("settles internal application package decisions from structured answers", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Prepared package");
+    await db.update(issues).set({ status: "in_review" }).where(eq(issues.id, issueId));
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "ask_user_questions",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        title: "Application package decision",
+        questions: [{
+          id: "application_package_decision",
+          prompt: "What should happen next?",
+          selectionMode: "single",
+          required: true,
+          options: [
+            { id: "approve_internal_application_package", label: "Approve internal application package" },
+            { id: "request_changes", label: "Request changes" },
+            { id: "decline", label: "Decline" },
+          ],
+        }],
+      },
+    }, {
+      userId: "local-board",
+    });
+
+    await interactionsSvc.answerQuestions({
+      id: issueId,
+      companyId,
+    }, created.id, {
+      answers: [{ questionId: "application_package_decision", optionIds: ["approve_internal_application_package"] }],
+    }, {
+      userId: "local-board",
+    });
+
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issue.status).toBe("done");
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        authorType: "system",
+        body: expect.stringContaining("Internal application package approved"),
       }),
     ]));
   });
