@@ -3558,7 +3558,11 @@ export function issueRoutes(
     if (input.reviewInteractionId) {
       const designatedReviewConfirmation = pendingInteractions.find((interaction) =>
         interaction.id === input.reviewInteractionId
-        && (interaction.kind === "request_confirmation" || interaction.kind === "request_checkbox_confirmation")
+        && (
+          interaction.kind === "request_confirmation"
+          || interaction.kind === "request_checkbox_confirmation"
+          || interaction.kind === "ask_user_questions"
+        )
         && (
           input.actorType === "agent"
             ? interaction.createdByAgentId === input.actorAgentId
@@ -3579,7 +3583,7 @@ export function issueRoutes(
         const creatorDescription = input.actorType === "agent"
           ? "this agent run"
           : "this user";
-        throw unprocessable(`reviewInteractionId must identify a pending non-tool confirmation created by ${creatorDescription}`, {
+        throw unprocessable(`reviewInteractionId must identify a pending non-tool review interaction created by ${creatorDescription}`, {
           code: "invalid_review_interaction",
           reviewInteractionId: input.reviewInteractionId,
         });
