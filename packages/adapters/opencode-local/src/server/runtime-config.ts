@@ -58,6 +58,8 @@ const TASK_WORKSPACE_HELPER_ONLY_BASH_PERMISSION_RULES: [string, string][] = [
   ["tee *", "deny"],
   ["curl *$PAPERCLIP_API_URL/api/issues*", "allow"],
   ["curl *$PAPERCLIP_API_URL/api/companies/*/issues*", "allow"],
+  ["curl *$PAPERCLIP_API_BASE/api/issues*", "allow"],
+  ["curl *$PAPERCLIP_API_BASE/api/companies/*/issues*", "allow"],
   ["task_workspace.py *", "allow"],
   ["python task_workspace.py *", "allow"],
   ["python3 task_workspace.py *", "allow"],
@@ -68,6 +70,10 @@ const TASK_WORKSPACE_HELPER_ONLY_BASH_PERMISSION_RULES: [string, string][] = [
 
 const TASK_WORKSPACE_DISPOSITION_ONLY_BASH_PERMISSION_RULES: [string, string][] = [
   ["*", "deny"],
+  ["curl *$PAPERCLIP_API_URL/api/issues*", "allow"],
+  ["curl *$PAPERCLIP_API_URL/api/companies/*/issues*", "allow"],
+  ["curl *$PAPERCLIP_API_BASE/api/issues*", "allow"],
+  ["curl *$PAPERCLIP_API_BASE/api/companies/*/issues*", "allow"],
   ["task_workspace.py issue-summary", "allow"],
   ["python task_workspace.py issue-summary", "allow"],
   ["python3 task_workspace.py issue-summary", "allow"],
@@ -296,7 +302,7 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   }
   if (taskWorkspaceCommandPolicy === "disposition_only") {
     notes.push(
-      "Injected task disposition-only shell policy: use task_workspace.py only for issue-summary, add-comment, and set-status.",
+      "Injected task disposition-only shell policy: use task_workspace.py only for issue-summary, add-comment, and set-status; Paperclip issue API curl calls remain available for sanctioned interactions and disposition updates.",
     );
   }
 

@@ -387,6 +387,8 @@ describe("prepareOpenCodeRuntimeConfig", () => {
       "tee *": "deny",
       "curl *$PAPERCLIP_API_URL/api/issues*": "allow",
       "curl *$PAPERCLIP_API_URL/api/companies/*/issues*": "allow",
+      "curl *$PAPERCLIP_API_BASE/api/issues*": "allow",
+      "curl *$PAPERCLIP_API_BASE/api/companies/*/issues*": "allow",
       "task_workspace.py *": "allow",
       "python task_workspace.py *": "allow",
       "python3 task_workspace.py *": "allow",
@@ -439,6 +441,8 @@ describe("prepareOpenCodeRuntimeConfig", () => {
       "cat *": "deny",
       "curl *$PAPERCLIP_API_URL/api/issues*": "allow",
       "curl *$PAPERCLIP_API_URL/api/companies/*/issues*": "allow",
+      "curl *$PAPERCLIP_API_BASE/api/issues*": "allow",
+      "curl *$PAPERCLIP_API_BASE/api/companies/*/issues*": "allow",
       "task_workspace.py *": "allow",
       "*/task_workspace.py *": "allow",
     });
@@ -463,6 +467,10 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     expect(runtimeConfig.permission?.task).toBe("deny");
     expect(runtimeConfig.permission?.bash).toMatchObject({
       "*": "deny",
+      "curl *$PAPERCLIP_API_URL/api/issues*": "allow",
+      "curl *$PAPERCLIP_API_URL/api/companies/*/issues*": "allow",
+      "curl *$PAPERCLIP_API_BASE/api/issues*": "allow",
+      "curl *$PAPERCLIP_API_BASE/api/companies/*/issues*": "allow",
       "*/task_workspace.py issue-summary": "allow",
       "*/task_workspace.py add-comment *": "allow",
       "*/task_workspace.py set-status *": "allow",
@@ -470,7 +478,7 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     expect(runtimeConfig.permission?.bash).not.toHaveProperty("*/task_workspace.py read *");
     expect(runtimeConfig.permission?.bash).not.toHaveProperty("*/task_workspace.py validate *");
     expect(prepared.notes).toEqual([
-      "Injected task disposition-only shell policy: use task_workspace.py only for issue-summary, add-comment, and set-status.",
+      "Injected task disposition-only shell policy: use task_workspace.py only for issue-summary, add-comment, and set-status; Paperclip issue API curl calls remain available for sanctioned interactions and disposition updates.",
     ]);
     await prepared.cleanup();
   });
@@ -503,6 +511,8 @@ describe("prepareOpenCodeRuntimeConfig", () => {
       "*": "deny",
       "curl *$PAPERCLIP_API_URL/api/issues*": "allow",
       "curl *$PAPERCLIP_API_URL/api/companies/*/issues*": "allow",
+      "curl *$PAPERCLIP_API_BASE/api/issues*": "allow",
+      "curl *$PAPERCLIP_API_BASE/api/companies/*/issues*": "allow",
       "task_workspace.py *": "allow",
       "*/task_workspace.py *": "allow",
     });
@@ -529,6 +539,8 @@ describe("prepareOpenCodeRuntimeConfig", () => {
       "*": "deny",
       "curl *$PAPERCLIP_API_URL/api/issues*": "allow",
       "curl *$PAPERCLIP_API_URL/api/companies/*/issues*": "allow",
+      "curl *$PAPERCLIP_API_BASE/api/issues*": "allow",
+      "curl *$PAPERCLIP_API_BASE/api/companies/*/issues*": "allow",
       "task_workspace.py *": "allow",
     });
     expect(runtimeConfig.permission?.bash).not.toHaveProperty("curl *");
