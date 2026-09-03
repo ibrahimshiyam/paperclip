@@ -169,7 +169,7 @@ describeEmbeddedPostgres("attention service", () => {
     executionState?: Record<string, unknown> | null;
     updatedAt?: Date;
     createdAt?: Date;
-    unblockDescriptor?: { owner: { userId: string } | "board"; action: string } | null;
+    unblockDescriptor?: { owner: { userId: string } | "board" | string; action: string } | null;
     blockedTransitionAt?: Date | null;
     harnessKind?: string | null;
     reviewPolicy?: "anyone" | "not_creator" | "human_only" | null;
@@ -1253,6 +1253,23 @@ describeEmbeddedPostgres("attention service", () => {
 
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({ sourceKind: "blocker_attention", whyNow: "Approve the exception" });
+  });
+
+  it("ignores legacy string unblock owners without crashing attention listing", async () => {
+    const { companyId } = await seedCompany("ATS");
+    const transitionAt = new Date("2026-07-23T18:30:00.000Z");
+    const issueId = await insertIssue({
+      companyId,
+      identifier: "ATS-1",
+      title: "Needs labeled owner action",
+      status: "blocked",
+      unblockDescriptor: { owner: "Ozyra CEO", action: "Review the exception" },
+      blockedTransitionAt: transitionAt,
+    });
+
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+
+    expect(feed.items.some((item) => item.dedupKey === `blocked-owner:${issueId}:${transitionAt.toISOString()}`)).toBe(false);
   });
 
   it("keeps legacy blocker attention visible for pre-rollout blocked issues", async () => {

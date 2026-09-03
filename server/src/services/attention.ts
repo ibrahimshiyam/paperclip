@@ -230,6 +230,11 @@ function readRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
+function readOwnerUserId(value: unknown) {
+  const owner = readRecord(value);
+  return typeof owner.userId === "string" ? owner.userId : null;
+}
+
 function readArray(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
 }
@@ -1544,7 +1549,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       for (const issue of typedBlockedIssues) {
         const descriptor = issue.unblockDescriptor;
         const humanOwnerMatches = descriptor?.owner === "board"
-          || (descriptor?.owner && "userId" in descriptor.owner && descriptor.owner.userId === options.userId);
+          || readOwnerUserId(descriptor?.owner) === options.userId;
         if (descriptor && humanOwnerMatches && isProspectiveBlockedTransition(issue)) {
           const issueSummary = blockedIssueSummaries.get(issue.id) ?? null;
           add(createItem({
