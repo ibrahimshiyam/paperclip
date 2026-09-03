@@ -98,6 +98,32 @@ function docxBytes() {
 }
 
 describe("materializePaperclipAttachments", () => {
+  it("creates an empty task workspace even when a task has no uploaded attachments", async () => {
+    const workspace = await makeWorkspace();
+    const context = {
+      taskId: "issue-aca-empty",
+      paperclipWake: {
+        reason: "issue_assigned",
+        issue: { id: "issue-aca-empty", identifier: "ACA-EMPTY", title: "Research with no attachments" },
+        artifactInventory: {
+          counts: { documents: 0, workProducts: 0, attachments: 0 },
+          documents: [],
+          workProducts: [],
+          attachments: [],
+        },
+      },
+    };
+
+    const result = await materializePaperclipAttachments({
+      context,
+      workspaceCwd: workspace,
+    });
+
+    expect(result.materialized).toEqual([]);
+    const stats = await fs.stat(path.join(workspace, ".paperclip-work", "issue-aca-empty"));
+    expect(stats.isDirectory()).toBe(true);
+  });
+
   it("turns an uploaded Paperclip PDF attachment into canonical local files before prompt render", async () => {
     const workspace = await makeWorkspace();
     const uploadedPdf = pdfBytes("aca-46");

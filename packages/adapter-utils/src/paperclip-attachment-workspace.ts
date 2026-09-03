@@ -88,6 +88,30 @@ function issueIdFromContext(context: Record<string, unknown>, wake: Record<strin
   throw new Error("Cannot materialize uploaded attachment: Paperclip task id is missing.");
 }
 
+function optionalIssueIdFromContext(context: Record<string, unknown>, wake: Record<string, unknown>): string | null {
+  const direct = asString(context.taskId) || asString(context.issueId);
+  if (direct) return direct;
+  const issue = asObject(wake.issue);
+  const issueId = asString(issue.id);
+  return issueId || null;
+}
+
+export async function ensurePaperclipTaskWorkspace(input: {
+  context: Record<string, unknown>;
+  workspaceCwd: string;
+}): Promise<string | null> {
+  const wake = asObject(input.context.paperclipWake);
+  const issueId = optionalIssueIdFromContext(input.context, wake);
+  if (!issueId) return null;
+  const workspaceCwd = input.workspaceCwd.trim();
+  if (!path.isAbsolute(workspaceCwd)) {
+    throw new Error("Cannot prepare Paperclip task workspace: execution workspace is not an absolute local path.");
+  }
+  const taskWorkspaceDir = path.join(workspaceCwd, ".paperclip-work", issueId);
+  await fs.mkdir(taskWorkspaceDir, { recursive: true });
+  return taskWorkspaceDir;
+}
+
 function normalizeApiBaseUrl(apiBaseUrl: string): string {
   const trimmed = apiBaseUrl.trim().replace(/\/+$/, "");
   return trimmed.endsWith("/api") ? trimmed.slice(0, -4) : trimmed;
@@ -327,6 +351,10 @@ export async function materializePaperclipAttachments(
         .map((entry) => asObject(entry))
         .filter((entry) => Object.keys(entry).length > 0)
     : [];
+  await ensurePaperclipTaskWorkspace({
+    context: options.context,
+    workspaceCwd: options.workspaceCwd,
+  });
   if (attachments.length === 0) {
     return { context: options.context, materialized: [] };
   }
