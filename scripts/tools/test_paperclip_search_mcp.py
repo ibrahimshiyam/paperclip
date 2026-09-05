@@ -64,14 +64,14 @@ class SearchBatchTests(unittest.TestCase):
         with patch.object(search, "_search_one", side_effect=fake_search):
             result = search._search_batch_sync(
                 ["ai consultant", "digital transformation"],
-                ["duckduckgo", "bing"],
+                ["duckduckgo", "brave"],
                 5,
                 "m",
             )
         self.assertEqual(result["request_count"], 4)
         self.assertEqual(result["successful_requests"], 4)
         self.assertEqual(result["unique_result_count"], 1)
-        self.assertEqual(result["results"][0]["engines"], ["duckduckgo", "bing"])
+        self.assertEqual(result["results"][0]["engines"], ["duckduckgo", "brave"])
         self.assertEqual(len(result["results"][0]["queries"]), 2)
 
     def test_rejects_unbounded_batches(self) -> None:

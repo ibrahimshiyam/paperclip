@@ -20,8 +20,8 @@ from ddgs import DDGS
 from mcp.server.mcpserver import MCPServer
 
 
-DEFAULT_BACKENDS = ("duckduckgo", "bing", "brave", "mojeek", "startpage")
-ALLOWED_BACKENDS = frozenset(DEFAULT_BACKENDS + ("google", "yahoo"))
+DEFAULT_BACKENDS = ("duckduckgo", "brave", "google", "mojeek", "startpage")
+ALLOWED_BACKENDS = frozenset(DEFAULT_BACKENDS + ("yahoo",))
 TRACKING_KEYS = frozenset(
     {
         "fbclid",
