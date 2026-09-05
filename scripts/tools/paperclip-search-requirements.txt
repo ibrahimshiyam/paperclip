@@ -1,0 +1,2 @@
+beautifulsoup4==4.14.2
+ddgs[mcp]==9.16.0
