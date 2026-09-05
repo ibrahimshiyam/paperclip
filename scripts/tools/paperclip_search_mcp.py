@@ -20,8 +20,8 @@ from ddgs import DDGS
 from mcp.server.mcpserver import MCPServer
 
 
-DEFAULT_BACKENDS = ("duckduckgo", "brave", "google", "mojeek", "startpage")
-ALLOWED_BACKENDS = frozenset(DEFAULT_BACKENDS + ("yahoo",))
+DEFAULT_BACKENDS = ("google", "yahoo", "brave", "duckduckgo", "mojeek")
+ALLOWED_BACKENDS = frozenset(DEFAULT_BACKENDS + ("startpage",))
 TRACKING_KEYS = frozenset(
     {
         "fbclid",
@@ -370,6 +370,17 @@ def _search_one(
             "results": results,
         }
     except Exception as exc:  # DDGS backends expose several provider-specific exceptions.
+        message = str(exc).strip()
+        if message.rstrip(".").lower() == "no results found":
+            return {
+                "query": query,
+                "engine": backend,
+                "started_at": started,
+                "finished_at": _utc_now(),
+                "status": "empty",
+                "result_count": 0,
+                "results": [],
+            }
         return {
             "query": query,
             "engine": backend,
@@ -377,7 +388,7 @@ def _search_one(
             "finished_at": _utc_now(),
             "status": "error",
             "result_count": 0,
-            "error": f"{type(exc).__name__}: {str(exc)[:500]}",
+            "error": f"{type(exc).__name__}: {message[:500]}",
             "results": [],
         }
 
@@ -478,15 +489,21 @@ def _search_batch_sync(
             item["url"],
         )
     )
-    ok_requests = sum(item["status"] == "ok" for item in requests)
+    result_bearing_requests = sum(item["status"] == "ok" for item in requests)
+    empty_requests = sum(item["status"] == "empty" for item in requests)
+    completed_requests = result_bearing_requests + empty_requests
+    failed_requests = sum(item["status"] == "error" for item in requests)
     return {
         "started_at": started,
         "finished_at": _utc_now(),
         "query_count": len(clean_queries),
         "engine_count": len(clean_backends),
         "request_count": len(requests),
-        "successful_requests": ok_requests,
-        "failed_requests": len(requests) - ok_requests,
+        "completed_requests": completed_requests,
+        "successful_requests": completed_requests,
+        "result_bearing_requests": result_bearing_requests,
+        "empty_requests": empty_requests,
+        "failed_requests": failed_requests,
         "unique_result_count": len(results),
         "requests": requests,
         "results": results,
