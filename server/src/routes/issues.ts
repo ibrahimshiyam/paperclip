@@ -11207,7 +11207,7 @@ export function issueRoutes(
     const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
-    const interactions = await issueThreadInteractionService(db).listForIssue(id);
+    const interactions = await issueThreadInteractionService(db).listForIssue(issue.id);
     res.json(interactions);
   });
 
