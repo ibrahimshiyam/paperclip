@@ -209,6 +209,57 @@ async def task_issue_summary() -> dict[str, Any]:
     return json.loads(raw)
 
 
+async def task_list_workspace() -> dict[str, str]:
+    """List files in the current issue's isolated task workspace."""
+
+    return {"files": await asyncio.to_thread(_run_helper, "list")}
+
+
+async def task_read_workspace_file(
+    file: str,
+    start_line: int = 1,
+    end_line: int = 500,
+) -> dict[str, Any]:
+    """Read a bounded line range from a current task-workspace file."""
+
+    if start_line < 1 or end_line < start_line or end_line - start_line > 2000:
+        raise ValueError("line range must be ordered, positive, and no larger than 2001 lines")
+    relative = _relative_file(file)
+    content = await asyncio.to_thread(
+        _run_helper,
+        "read",
+        relative,
+        "--start",
+        str(start_line),
+        "--end",
+        str(end_line),
+    )
+    return {"file": relative, "start_line": start_line, "end_line": end_line, "content": content}
+
+
+async def task_read_published_document(key: str) -> dict[str, Any]:
+    """Read the current issue's published document by key, including body and revision."""
+
+    if not key.strip():
+        raise ValueError("key must not be empty")
+    task_id = urllib.parse.quote(_require_env("PAPERCLIP_TASK_ID"), safe="")
+    encoded_key = urllib.parse.quote(key.strip(), safe="")
+    document = await asyncio.to_thread(
+        _api_request,
+        "GET",
+        f"/api/issues/{task_id}/documents/{encoded_key}",
+    )
+    if not isinstance(document, dict) or not isinstance(document.get("body"), str):
+        raise RuntimeError("published document response has no body")
+    return {
+        "key": document.get("key", key.strip()),
+        "title": document.get("title"),
+        "latestRevisionId": document.get("latestRevisionId"),
+        "latestRevisionNumber": document.get("latestRevisionNumber", document.get("revision")),
+        "body": document["body"],
+    }
+
+
 async def task_write_report(file: str, content: str) -> dict[str, str]:
     """Write a complete UTF-8 report to the current task workspace without shell quoting."""
 
@@ -346,6 +397,9 @@ async def task_submit_report_for_review(
 
 mcp = MCPServer("paperclip-task-operations")
 mcp.tool()(task_issue_summary)
+mcp.tool()(task_list_workspace)
+mcp.tool()(task_read_workspace_file)
+mcp.tool()(task_read_published_document)
 mcp.tool()(task_write_report)
 mcp.tool()(task_publish_report)
 mcp.tool()(task_add_result_comment)

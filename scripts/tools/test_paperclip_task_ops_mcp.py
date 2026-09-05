@@ -143,6 +143,24 @@ class TaskOpsTests(unittest.TestCase):
         self.assertIn(("set-status", "in_review"), calls)
         self.assertEqual(result["status"], "in_review")
 
+    def test_reads_published_document_for_independent_review(self) -> None:
+        document = {
+            "key": "result",
+            "title": "Result",
+            "latestRevisionId": "revision-2",
+            "latestRevisionNumber": 2,
+            "body": "# Verified result",
+        }
+        env = {"PAPERCLIP_TASK_ID": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}
+        with patch.dict(os.environ, env, clear=True), patch.object(
+            ops, "_api_request", return_value=document
+        ) as request:
+            result = asyncio.run(ops.task_read_published_document("result"))
+
+        self.assertEqual(result["body"], "# Verified result")
+        self.assertEqual(result["latestRevisionNumber"], 2)
+        self.assertIn("/documents/result", request.call_args.args[1])
+
 
 if __name__ == "__main__":
     unittest.main()
