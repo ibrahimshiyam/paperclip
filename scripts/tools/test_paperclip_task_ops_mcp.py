@@ -23,6 +23,19 @@ class TaskOpsTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             ops._relative_file("../other-task/report.md")
 
+    def test_accepts_absolute_path_only_inside_current_task_workspace(self) -> None:
+        env = {
+            "PAPERCLIP_WORKSPACE_CWD": "/workspace",
+            "PAPERCLIP_TASK_ID": "task-1",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            self.assertEqual(
+                ops._relative_file("/workspace/.paperclip-work/task-1/result.md"),
+                "result.md",
+            )
+            with self.assertRaises(ValueError):
+                ops._relative_file("/workspace/another-task/result.md")
+
     def test_completion_stops_before_status_when_publish_fails(self) -> None:
         calls: list[tuple[str, ...]] = []
 
@@ -37,7 +50,11 @@ class TaskOpsTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "publish failed"):
                 asyncio.run(
                     ops.task_complete_with_report(
-                        "PER-1.md", "report", "per-1", "PER-1 result", "Completed."
+                        "PER-1.md",
+                        "per-1",
+                        "PER-1 result",
+                        "Completed.",
+                        content="report",
                     )
                 )
 
@@ -107,19 +124,19 @@ class TaskOpsTests(unittest.TestCase):
             result = asyncio.run(
                 ops.task_submit_report_for_review(
                     "PER-1.md",
-                    "report",
                     "per-1",
                     "PER-1 result",
                     "Ready for review.",
                     "Choose",
-                    "Report ready",
-                    "choice",
                     "Choose a next step",
                     [
                         {"id": "proceed", "label": "Proceed"},
                         {"id": "reject", "label": "Reject"},
                     ],
-                    "per-1-choice",
+                    content="report",
+                    decision_summary="Report ready",
+                    question_id="choice",
+                    idempotency_key="per-1-choice",
                 )
             )
 

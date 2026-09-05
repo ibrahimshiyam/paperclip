@@ -32,8 +32,16 @@ def _require_env(name: str) -> str:
 
 def _relative_file(value: str) -> str:
     path = Path(value.strip())
-    if not value.strip() or path.is_absolute() or ".." in path.parts:
+    if not value.strip() or ".." in path.parts:
         raise ValueError("file must be a relative task-workspace path without '..'")
+    if path.is_absolute():
+        workspace = _require_env("PAPERCLIP_WORKSPACE_CWD")
+        task_id = _require_env("PAPERCLIP_TASK_ID")
+        root = (Path(workspace) / ".paperclip-work" / task_id).resolve()
+        try:
+            path = path.resolve().relative_to(root)
+        except ValueError as exc:
+            raise ValueError("absolute file path is outside the current task workspace") from exc
     return str(path)
 
 
@@ -120,10 +128,10 @@ def _create_decision(
     question_id: str,
     prompt: str,
     options: list[dict[str, Any]],
-    idempotency_key: str,
+    idempotency_key: str | None,
 ) -> dict[str, Any]:
-    if not all(item.strip() for item in (title, question_id, prompt, idempotency_key)):
-        raise ValueError("title, question_id, prompt, and idempotency_key are required")
+    if not all(item.strip() for item in (title, question_id, prompt)):
+        raise ValueError("title, question_id, and prompt are required")
     if not 2 <= len(options) <= 10:
         raise ValueError("provide between 2 and 10 decision options")
     normalized: list[dict[str, Any]] = []
@@ -144,12 +152,14 @@ def _create_decision(
             item["freeText"] = True
         normalized.append(item)
 
-    task_id = urllib.parse.quote(_require_env("PAPERCLIP_TASK_ID"), safe="")
+    raw_task_id = _require_env("PAPERCLIP_TASK_ID")
+    task_id = urllib.parse.quote(raw_task_id, safe="")
+    stable_key = (idempotency_key or f"task-ops:{raw_task_id}:{question_id}").strip()
     payload = {
         "kind": "ask_user_questions",
         "resolverPolicy": "human_only",
         "continuationPolicy": "wake_assignee",
-        "idempotencyKey": idempotency_key.strip(),
+        "idempotencyKey": stable_key,
         "title": title.strip(),
         "summary": summary.strip() or None,
         "payload": {
@@ -177,7 +187,7 @@ def _create_decision(
             if isinstance(item, dict)
             and (
                 (interaction_id and item.get("id") == interaction_id)
-                or item.get("idempotencyKey") == idempotency_key.strip()
+                or item.get("idempotencyKey") == stable_key
             )
         ),
         None,
@@ -254,17 +264,17 @@ async def task_assign_current_issue(
 
 async def task_complete_with_report(
     file: str,
-    content: str,
     key: str,
     title: str,
     comment: str,
+    content: str | None = None,
     change_summary: str = "Published completed task result",
 ) -> dict[str, Any]:
-    """Write, publish, comment, and mark Done; later steps run only after earlier verification."""
+    """Publish, comment, and mark Done; optionally write content first. Every step is verified."""
 
     if not comment.strip():
         raise ValueError("comment must not be empty")
-    written = await asyncio.to_thread(_write_text, file, content)
+    written = await asyncio.to_thread(_write_text, file, content) if content else "EXISTING FILE"
     published = await asyncio.to_thread(_publish, file, key, title, change_summary)
     commented = await asyncio.to_thread(_run_helper, "add-comment", comment.strip())
     disposed = await asyncio.to_thread(_run_helper, "set-status", "done")
@@ -285,23 +295,27 @@ async def task_complete_with_report(
 
 async def task_submit_report_for_review(
     file: str,
-    content: str,
     key: str,
     title: str,
     comment: str,
     decision_title: str,
-    decision_summary: str,
-    question_id: str,
     question_prompt: str,
     options: list[dict[str, Any]],
-    idempotency_key: str,
+    content: str | None = None,
+    decision_summary: str = "",
+    question_id: str = "decision",
+    idempotency_key: str | None = None,
     change_summary: str = "Published task result for human review",
 ) -> dict[str, Any]:
-    """Publish a report, create a clickable human decision, then verify In Review."""
+    """Publish a report, create a clickable human decision, then verify In Review.
+
+    Omit content to publish an existing file in the current task workspace. Internal decision
+    identifiers are generated automatically unless stable overrides are supplied.
+    """
 
     if not comment.strip():
         raise ValueError("comment must not be empty")
-    written = await asyncio.to_thread(_write_text, file, content)
+    written = await asyncio.to_thread(_write_text, file, content) if content else "EXISTING FILE"
     published = await asyncio.to_thread(_publish, file, key, title, change_summary)
     decision = await asyncio.to_thread(
         _create_decision,
